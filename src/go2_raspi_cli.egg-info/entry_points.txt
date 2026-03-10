@@ -1,0 +1,2 @@
+[console_scripts]
+go2ctl = go2_cli.main:main

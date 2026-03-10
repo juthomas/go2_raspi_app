@@ -1,0 +1,136 @@
+Metadata-Version: 2.4
+Name: go2-raspi-cli
+Version: 0.1.0
+Summary: CLI extensible pour piloter un Unitree Go2 depuis Raspberry Pi.
+Author: go2_raspi_app
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Provides-Extra: dds
+Requires-Dist: cyclonedds==0.10.2; extra == "dds"
+
+# go2-raspi-cli
+
+CLI Python pour Raspberry Pi afin de piloter un Unitree GO2 en DDS.
+
+## Ce que fait cette premiere version
+
+- `stand`: leve le robot (`SportClient.StandUp`)
+- `lie`: couche le robot (`SportClient.StandDown`)
+- force le mode `normal` avant commande (par defaut)
+- architecture extensible par transport:
+  - `dds` (implante)
+  - `udp` (stub)
+  - `webrtc` (stub)
+
+## Prerequis
+
+- Raspberry Pi avec Python `>=3.10`
+- liaison Ethernet directe vers le GO2
+- service motion/sport actif sur le robot
+- outils systeme: `cmake`, `python3-dev`, `build-essential`, `cyclonedds-dev`
+- dependances Python:
+  - `cyclonedds==0.10.2`
+  - `unitree_sdk2py` (installe en editable depuis le repo officiel)
+
+## Installation
+
+### 1) installer les prerequis systeme (Debian/Raspberry Pi OS)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y cmake cyclonedds-dev python3-dev build-essential
+```
+
+### 2) preparer un prefix CycloneDDS compatible avec pip
+
+`cyclonedds-python` cherche une arborescence `include/bin/lib`.
+Sur Debian, les libs sont dans `/usr/lib/aarch64-linux-gnu`, donc on cree un prefix.
+
+```bash
+mkdir -p "$HOME/cyclonedds-prefix"
+ln -sfn /usr/include "$HOME/cyclonedds-prefix/include"
+ln -sfn /usr/bin "$HOME/cyclonedds-prefix/bin"
+ln -sfn /usr/lib/aarch64-linux-gnu "$HOME/cyclonedds-prefix/lib"
+```
+
+### 3) installer ce projet + CycloneDDS dans le venv
+
+```bash
+cd /home/pigeons/Documents/unitree/go2_raspi_app
+python3 -m venv .venv
+source .venv/bin/activate
+export CYCLONEDDS_HOME="$HOME/cyclonedds-prefix"
+
+# workaround Python 3.13 pour cyclonedds==0.10.2
+export CFLAGS="-D_Py_IsFinalizing=Py_IsFinalizing"
+
+pip install --upgrade pip
+pip install -e ".[dds]"
+```
+
+### 4) installer `unitree_sdk2py` en editable (evite un bug packaging upstream)
+
+```bash
+cd /home/pigeons/Documents/unitree
+git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
+cd /home/pigeons/Documents/unitree/go2_raspi_app
+source .venv/bin/activate
+export CYCLONEDDS_HOME="$HOME/cyclonedds-prefix"
+export CFLAGS="-D_Py_IsFinalizing=Py_IsFinalizing"
+pip install -e /home/pigeons/Documents/unitree/unitree_sdk2_python
+```
+
+## Utilisation
+
+Trouver l'interface Ethernet connectee au robot:
+
+```bash
+ip -br a
+```
+
+Exemples:
+
+```bash
+# leve le robot
+go2ctl --transport dds --iface eth0 stand
+
+# couche le robot
+go2ctl --transport dds --iface eth0 lie
+
+# force uniquement le mode normal
+go2ctl --transport dds --iface eth0 normal-mode
+```
+
+Options utiles:
+
+- `--yes`: evite la confirmation interactive avant mouvement
+- `--timeout 15`: timeout RPC en secondes
+- `--no-ensure-normal-mode`: n'impose pas le mode normal
+
+## Structure du projet
+
+```text
+src/go2_cli/
+  main.py                 # entrypoint CLI
+  cli.py                  # parse argparse
+  errors.py               # exceptions metier
+  config.py               # config runtime
+  transports/
+    base.py               # contrat transport
+    dds.py                # implementation DDS (SDK2 officiel)
+    udp.py                # stub future
+    webrtc.py             # stub future
+```
+
+## Notes GO2 / Unitree
+
+- Cette CLI s'appuie sur le SDK officiel `unitree_sdk2py`.
+- Les commandes posture utilisent le service `sport`.
+- Le mode `normal` est applique via `motion_switcher`.
+- Avec Python 3.13, `cyclonedds==0.10.2` peut necessiter `CFLAGS="-D_Py_IsFinalizing=Py_IsFinalizing"` a l'installation.
+- Le wheel `unitree_sdk2py` construit depuis le repo peut rater le sous-package `b2`; l'installation editable contourne ce probleme.
+- En cas d'echec, verifier d'abord:
+  - interface reseau (`--iface`)
+  - lien Ethernet
+  - services actifs cote robot (sport/motion)

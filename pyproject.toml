@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "go2-raspi-cli"
+version = "0.1.0"
+description = "CLI extensible pour piloter un Unitree Go2 depuis Raspberry Pi."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "go2_raspi_app" }]
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+dds = [
+  "cyclonedds==0.10.2",
+]
+
+[project.scripts]
+go2ctl = "go2_cli.main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
