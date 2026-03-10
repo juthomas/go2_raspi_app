@@ -7,6 +7,8 @@ CLI Python pour Raspberry Pi afin de piloter un Unitree GO2 en DDS.
 - `stand`: leve le robot (`SportClient.StandUp`)
 - `lie`: couche le robot (`SportClient.StandDown`)
 - `tui`: mode ncurses de pilotage temps reel (teleop + infos robot)
+  - V5: enregistrement/relecture de sequences custom (macros)
+  - V6: vrai mode Teach (capture manuelle articulations + replay low-level)
 - force le mode `normal` avant commande (par defaut)
 - architecture extensible par transport:
   - `dds` (implante)
@@ -129,6 +131,8 @@ Controles:
 - Interface stylee UTF-8 avec panneaux (`Robot State`, `Teleop`, `Controls`, `Modes`, `Events`) + jauges alignees
 - Barres de progression colorees (vert/jaune/rouge + bleu pour progression active)
 - V4: acceleration progressive + freinage doux + anti-overflow de queue
+- V5: sequence recorder/player (actions teleop + modes)
+- V6: teach mode (manipulation manuelle en `Damp` puis replay articulations)
 - `t`: bascule le mode de conduite
   - `STEP`: chaque appui envoie une **impulsion** (distance/angle)
   - `HOLD`: maintien de touche via key-repeat (auto-stop si relache)
@@ -144,6 +148,19 @@ Controles:
 - `m`: tenter `normal-mode`
 - `x` ou `Espace`: stop d'urgence + vide la queue
 - `r`: reset queue (STEP) ou etat hold (HOLD)
+- Sequences custom:
+  - `R` ou `f`: demarrer/arreter l'enregistrement
+  - `P` ou `y`: jouer la sequence en memoire/chargee
+  - `K` ou `g`: sauvegarder la sequence en JSON
+  - `L` ou `l`: charger la sequence depuis le JSON
+- Teach custom (vrai "teach by hand"):
+  - `c`: demarrer/arreter la capture Teach
+  - `z`: jouer la capture Teach (replay low-level)
+  - `e`: sauvegarder le Teach en JSON
+  - `.`: charger le Teach depuis JSON
+  - (fallback) `F9/F10/F11/F12` ou `C/V/B/N` si necessaire
+  - Pendant `Teach REC`, manipuler le robot doucement a la main (mode compliant).
+  - IMPORTANT: garder la zone libre, commencer avec amplitudes faibles.
 - Reglages dynamiques (en live):
   - `v/b`: vitesse lineaire **moins/plus**
   - `n/h`: distance par appui +/-
@@ -164,7 +181,9 @@ go2ctl --transport dds --iface eth0 --yes tui \
   --step-yaw-deg 12 \
   --step-pitch-deg 6 \
   --control-mode step \
-  --hold-timeout 0.24
+  --hold-timeout 0.24 \
+  --sequence-file ./go2_sequence.json \
+  --teach-file ./go2_teach.json
 ```
 
 ## Structure du projet

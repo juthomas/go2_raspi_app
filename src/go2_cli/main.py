@@ -40,6 +40,8 @@ def run(argv: list[str] | None = None) -> int:
                     profile_start=args.profile,
                     control_mode_start=args.control_mode,
                     hold_timeout_s=args.hold_timeout,
+                    sequence_file=args.sequence_file,
+                    teach_file=args.teach_file,
                 ),
             )
 

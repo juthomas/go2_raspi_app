@@ -121,6 +121,21 @@ def build_parser() -> argparse.ArgumentParser:
             "(defaut: 0.24s)."
         ),
     )
+    tui_parser.add_argument(
+        "--sequence-file",
+        default="go2_sequence.json",
+        help=(
+            "Fichier JSON de sequence pour le mode TUI "
+            "(record/play/save/load)."
+        ),
+    )
+    tui_parser.add_argument(
+        "--teach-file",
+        default="go2_teach.json",
+        help=(
+            "Fichier JSON du mode Teach (capture manuelle articulations + replay)."
+        ),
+    )
     return parser
 
 
