@@ -136,6 +136,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Fichier JSON du mode Teach (capture manuelle articulations + replay)."
         ),
     )
+    tui_parser.add_argument(
+        "--teach-speed",
+        type=float,
+        default=1.25,
+        help="Facteur vitesse replay Teach (defaut: 1.25).",
+    )
+    tui_parser.add_argument(
+        "--teach-blend",
+        type=float,
+        default=0.35,
+        help="Duree blend-in Teach au demarrage, en secondes (defaut: 0.35).",
+    )
     return parser
 
 

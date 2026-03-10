@@ -80,6 +80,8 @@ class TuiOptions:
     lateral_ratio: float = 0.8
     sequence_file: str = "go2_sequence.json"
     teach_file: str = "go2_teach.json"
+    teach_speed: float = 1.25
+    teach_blend_s: float = 0.35
 
 
 @dataclass
@@ -358,6 +360,13 @@ class DdsTeleopSession:
     def prepare_teach_mode(self) -> str:
         self._require_connected()
         events: list[str] = []
+        quick_timeout = _clamp(self._timeout_s * 0.20, 0.25, 1.20)
+
+        try:
+            self._sport_client.SetTimeout(quick_timeout)
+            self._motion_switcher_client.SetTimeout(quick_timeout)
+        except Exception:
+            pass
 
         try:
             damp_code = int(self._sport_client.Damp())
@@ -366,8 +375,9 @@ class DdsTeleopSession:
         except Exception as exc:
             events.append(f"Damp exception={exc}")
 
-        # Release current sport mode to allow low-level control.
-        for _ in range(6):
+        # Fast release of high-level sport mode (avoid slow StandDown loops).
+        mode_name = ""
+        for attempt in range(3):
             try:
                 check_code, payload = self._motion_switcher_client.CheckMode()
             except Exception as exc:
@@ -377,7 +387,6 @@ class DdsTeleopSession:
                 events.append(f"CheckMode code={check_code}")
                 break
 
-            mode_name = ""
             if isinstance(payload, dict):
                 mode_name = str(payload.get("name", "")).strip()
             elif payload is not None:
@@ -385,17 +394,28 @@ class DdsTeleopSession:
             if not mode_name:
                 break
 
-            try:
-                self._sport_client.StandDown()
-            except Exception:
-                pass
             release_code, _ = self._motion_switcher_client.ReleaseMode()
             if release_code != 0:
-                events.append(f"ReleaseMode code={release_code}")
-                break
-            time.sleep(0.20)
+                # Fallback once with StandDown if release is rejected.
+                if attempt == 0:
+                    try:
+                        self._sport_client.StandDown()
+                    except Exception:
+                        pass
+                    release_code, _ = self._motion_switcher_client.ReleaseMode()
+                if release_code != 0:
+                    events.append(f"ReleaseMode code={release_code}")
+                    break
+            time.sleep(0.05)
 
         self.stop_teach_stream()
+        if mode_name:
+            events.append(f"mode='{mode_name}'")
+        try:
+            self._sport_client.SetTimeout(self._timeout_s)
+            self._motion_switcher_client.SetTimeout(self._timeout_s)
+        except Exception:
+            pass
         return "Teach mode prepare: OK" if not events else "Teach mode prepare: " + "; ".join(events)
 
     def start_teach_stream(self, initial_q: list[float], kp: float, kd: float) -> None:
@@ -559,6 +579,10 @@ class Go2TuiApp:
         self._playback_running = False
         self._playback_started_at = 0.0
         self._playback_idx = 0
+        self._sequence_cache_key: tuple[str, int, int] | None = None
+        self._sequence_cache_actions: list[dict[str, Any]] = []
+        self._sequence_cache_mode: str = "STEP"
+        self._macro_target = "SEQ"
 
         # V6: real teach mode (manual joint capture + low-level replay).
         self._teach_file = Path(options.teach_file).expanduser()
@@ -570,10 +594,16 @@ class Go2TuiApp:
         self._teach_playing = False
         self._teach_play_started_at = 0.0
         self._teach_play_idx = 0
-        self._teach_play_blend_s = 1.2
+        self._teach_play_blend_s = _clamp(options.teach_blend_s, 0.05, 2.50)
+        self._teach_play_speed = _clamp(options.teach_speed, 0.25, 3.00)
         self._teach_play_start_q: list[float] = [0.0] * _JOINT_COUNT
         self._teach_kp = 38.0
         self._teach_kd = 3.2
+        self._teach_cache_key: tuple[str, int, int] | None = None
+        self._teach_cache_frames: list[dict[str, Any]] = []
+        self._teach_cache_kp: float = self._teach_kp
+        self._teach_cache_kd: float = self._teach_kd
+        self._last_io_label = "-"
 
     def run(self) -> int:
         try:
@@ -625,21 +655,25 @@ class Go2TuiApp:
             c_raw = chr(key)
             c = c_raw.lower()
 
-        # V5 sequence controls.
+        # Macro workflow: choose active target, then REC/PLAY/SAVE/LOAD.
+        if c == "0":
+            self._macro_target = "TEACH" if self._macro_target == "SEQ" else "SEQ"
+            self._events.append(f"macro_target -> {self._macro_target}")
+            return
         if key == curses.KEY_F5 or c_raw == "R" or c == "f":
-            self._toggle_recording()
+            self._macro_toggle_recording()
             return
         if key == curses.KEY_F6 or c_raw == "P" or c == "y":
-            self._start_sequence_playback()
+            self._macro_start_playback()
             return
         if key == curses.KEY_F7 or c_raw == "K" or c == "g":
-            self._save_sequence_to_file()
+            self._macro_save()
             return
         if key == curses.KEY_F8 or c_raw == "L" or c == "l":
-            self._load_sequence_from_file()
+            self._macro_load()
             return
 
-        # V6 teach controls (manual capture + low-level replay).
+        # Direct teach controls (compatibility shortcuts).
         if key == curses.KEY_F9 or c_raw == "C" or c == "c":
             self._toggle_teach_recording()
             return
@@ -752,6 +786,14 @@ class Go2TuiApp:
             self._mark_profile_custom()
             self._events.append(f"step_pitch -> {self._step_pitch_deg:.1f} deg")
             return
+        if c == ",":
+            self._teach_play_speed = self._bump(self._teach_play_speed, -0.10, 0.25, 3.00)
+            self._events.append(f"teach_speed -> x{self._teach_play_speed:.2f}")
+            return
+        if c == "/":
+            self._teach_play_speed = self._bump(self._teach_play_speed, +0.10, 0.25, 3.00)
+            self._events.append(f"teach_speed -> x{self._teach_play_speed:.2f}")
+            return
 
         # Left joystick: translation.
         if c == "w":
@@ -858,6 +900,35 @@ class Go2TuiApp:
         self._cmd_vyaw = 0.0
         self._cmd_pitch = 0.0
         self._last_cmd = "Stop"
+
+    def _macro_toggle_recording(self) -> None:
+        if self._macro_target == "SEQ":
+            self._toggle_recording()
+        else:
+            self._toggle_teach_recording()
+
+    def _macro_start_playback(self) -> None:
+        if self._macro_target == "SEQ":
+            self._start_sequence_playback()
+        else:
+            self._start_teach_playback()
+
+    def _macro_save(self) -> None:
+        if self._macro_target == "SEQ":
+            self._save_sequence_to_file()
+        else:
+            self._save_teach_to_file()
+
+    def _macro_load(self) -> None:
+        if self._macro_target == "SEQ":
+            self._load_sequence_from_file()
+        else:
+            self._load_teach_from_file()
+
+    @staticmethod
+    def _cache_key_for_path(path: Path) -> tuple[str, int, int]:
+        st = path.stat()
+        return (str(path.resolve()), int(st.st_mtime_ns), int(st.st_size))
 
     def _mode_action_tokens(self) -> set[str]:
         return {
@@ -982,6 +1053,7 @@ class Go2TuiApp:
             self._events.append("SAVE sequence ignore: rien a sauvegarder.")
             return
 
+        t0 = time.perf_counter()
         payload = {
             "version": 1,
             "initial_control_mode": self._sequence_initial_mode.lower(),
@@ -990,19 +1062,45 @@ class Go2TuiApp:
         try:
             self._sequence_file.parent.mkdir(parents=True, exist_ok=True)
             self._sequence_file.write_text(
-                json.dumps(payload, indent=2, sort_keys=True),
+                json.dumps(payload, separators=(",", ":")),
                 encoding="utf-8",
             )
+            self._sequence_cache_key = self._cache_key_for_path(self._sequence_file)
+            self._sequence_cache_actions = [dict(a) for a in self._sequence_actions]
+            self._sequence_cache_mode = self._sequence_initial_mode
+            io_ms = (time.perf_counter() - t0) * 1000.0
+            self._last_io_label = f"SEQ save {io_ms:.1f}ms"
             self._events.append(f"SEQ saved -> {self._sequence_file}")
         except Exception as exc:
             self._events.append(f"SAVE sequence: exception {exc}")
 
     def _load_sequence_from_file(self) -> None:
         try:
-            payload = json.loads(self._sequence_file.read_text(encoding="utf-8"))
+            cache_key = self._cache_key_for_path(self._sequence_file)
         except FileNotFoundError:
             self._events.append(f"LOAD sequence: fichier absent ({self._sequence_file})")
             return
+        except Exception as exc:
+            self._events.append(f"LOAD sequence: stat exception {exc}")
+            return
+
+        t0 = time.perf_counter()
+        if self._sequence_cache_key == cache_key:
+            loaded_actions = [dict(a) for a in self._sequence_cache_actions]
+            loaded_mode = self._sequence_cache_mode
+            self._sequence_actions = loaded_actions
+            self._sequence_initial_mode = loaded_mode
+            self._sequence_name = self._sequence_file.name
+            duration = loaded_actions[-1]["t"] if loaded_actions else 0.0
+            io_ms = (time.perf_counter() - t0) * 1000.0
+            self._last_io_label = f"SEQ load(cache) {io_ms:.1f}ms"
+            self._events.append(
+                f"SEQ loaded(cache): {len(loaded_actions)} actions ({duration:.2f}s, mode={loaded_mode})"
+            )
+            return
+
+        try:
+            payload = json.loads(self._sequence_file.read_text(encoding="utf-8"))
         except Exception as exc:
             self._events.append(f"LOAD sequence: exception {exc}")
             return
@@ -1020,7 +1118,12 @@ class Go2TuiApp:
         self._sequence_actions = loaded_actions
         self._sequence_initial_mode = loaded_mode
         self._sequence_name = self._sequence_file.name
+        self._sequence_cache_key = cache_key
+        self._sequence_cache_actions = [dict(a) for a in loaded_actions]
+        self._sequence_cache_mode = loaded_mode
         duration = loaded_actions[-1]["t"] if loaded_actions else 0.0
+        io_ms = (time.perf_counter() - t0) * 1000.0
+        self._last_io_label = f"SEQ load {io_ms:.1f}ms"
         self._events.append(
             f"SEQ loaded: {len(loaded_actions)} actions ({duration:.2f}s, mode={loaded_mode})"
         )
@@ -1136,6 +1239,7 @@ class Go2TuiApp:
             self._events.append("Teach SAVE ignore: rien a sauvegarder.")
             return
 
+        t0 = time.perf_counter()
         payload = {
             "version": 1,
             "type": "go2_teach_q12",
@@ -1147,9 +1251,17 @@ class Go2TuiApp:
         try:
             self._teach_file.parent.mkdir(parents=True, exist_ok=True)
             self._teach_file.write_text(
-                json.dumps(payload, indent=2, sort_keys=True),
+                json.dumps(payload, separators=(",", ":")),
                 encoding="utf-8",
             )
+            self._teach_cache_key = self._cache_key_for_path(self._teach_file)
+            self._teach_cache_frames = [
+                {"t": float(frame["t"]), "q": list(frame["q"])} for frame in self._teach_frames
+            ]
+            self._teach_cache_kp = self._teach_kp
+            self._teach_cache_kd = self._teach_kd
+            io_ms = (time.perf_counter() - t0) * 1000.0
+            self._last_io_label = f"TEACH save {io_ms:.1f}ms"
             self._events.append(f"Teach saved -> {self._teach_file}")
         except Exception as exc:
             self._events.append(f"Teach SAVE exception: {exc}")
@@ -1159,10 +1271,32 @@ class Go2TuiApp:
             self._events.append("Teach LOAD refuse: mode teach actif.")
             return
         try:
-            payload = json.loads(self._teach_file.read_text(encoding="utf-8"))
+            cache_key = self._cache_key_for_path(self._teach_file)
         except FileNotFoundError:
             self._events.append(f"Teach LOAD: fichier absent ({self._teach_file})")
             return
+        except Exception as exc:
+            self._events.append(f"Teach LOAD stat exception: {exc}")
+            return
+
+        t0 = time.perf_counter()
+        if self._teach_cache_key == cache_key:
+            frames = [
+                {"t": float(frame["t"]), "q": list(frame["q"])}
+                for frame in self._teach_cache_frames
+            ]
+            self._teach_frames = frames
+            self._teach_kp = self._teach_cache_kp
+            self._teach_kd = self._teach_cache_kd
+            io_ms = (time.perf_counter() - t0) * 1000.0
+            self._last_io_label = f"TEACH load(cache) {io_ms:.1f}ms"
+            self._events.append(
+                f"Teach loaded(cache): {len(frames)} frames ({frames[-1]['t']:.2f}s)"
+            )
+            return
+
+        try:
+            payload = json.loads(self._teach_file.read_text(encoding="utf-8"))
         except Exception as exc:
             self._events.append(f"Teach LOAD exception: {exc}")
             return
@@ -1176,6 +1310,14 @@ class Go2TuiApp:
         self._teach_frames = frames
         self._teach_kp = _clamp(float(payload.get("kp", self._teach_kp)), 5.0, 80.0)
         self._teach_kd = _clamp(float(payload.get("kd", self._teach_kd)), 0.5, 8.0)
+        self._teach_cache_key = cache_key
+        self._teach_cache_frames = [
+            {"t": float(frame["t"]), "q": list(frame["q"])} for frame in frames
+        ]
+        self._teach_cache_kp = self._teach_kp
+        self._teach_cache_kd = self._teach_kd
+        io_ms = (time.perf_counter() - t0) * 1000.0
+        self._last_io_label = f"TEACH load {io_ms:.1f}ms"
         self._events.append(
             f"Teach loaded: {len(frames)} frames ({frames[-1]['t']:.2f}s)"
         )
@@ -1256,14 +1398,14 @@ class Go2TuiApp:
             ]
             phase = "blend-in"
         else:
-            teach_t = elapsed - self._teach_play_blend_s
+            teach_t = (elapsed - self._teach_play_blend_s) * self._teach_play_speed
             target_q = self._teach_target_at(teach_t)
-            phase = f"t={teach_t:.2f}s/{teach_total:.2f}s"
+            phase = f"t={teach_t:.2f}s/{teach_total:.2f}s x{self._teach_play_speed:.2f}"
 
         self._session.set_teach_target(target_q)
         self._last_cmd = f"TEACH PLAY ({phase})"
 
-        if elapsed >= self._teach_play_blend_s + teach_total + 0.20:
+        if elapsed >= self._teach_play_blend_s + (teach_total / self._teach_play_speed) + 0.20:
             self._stop_teach_playback("Teach PLAY complete.")
 
     def _normalize_sequence_actions(self, actions: Any) -> list[dict[str, Any]]:
@@ -1708,6 +1850,8 @@ class Go2TuiApp:
             if self._teach_playing
             else "off"
         )
+        macro_rec_state = rec_state if self._macro_target == "SEQ" else teach_rec_state
+        macro_play_state = play_state if self._macro_target == "SEQ" else teach_play_state
         self._safe_add(stdscr, 0, 0, " " * (max_x - 1), pair=1)
         header = " GO2 Control Center · DDS "
         self._safe_add(stdscr, 0, 2, header, pair=1, bold=True)
@@ -1717,6 +1861,7 @@ class Go2TuiApp:
             2,
             f"iface={self._session.iface} | mode={self._control_mode} | "
             f"profile={self._profile_name} | queue={len(self._pulse_queue)} | "
+            f"macro={self._macro_target} | "
             f"rec={rec_state} play={play_state} | "
             f"teach_rec={teach_rec_state} teach_play={teach_play_state} | q=quit",
             pair=4,
@@ -1789,7 +1934,7 @@ class Go2TuiApp:
             teleop_win,
             2,
             f"mode={self._control_mode} hold={self._hold_timeout_s:.2f}s "
-            f"rec={rec_state} play={play_state} teach={teach_rec_state}/{teach_play_state}",
+            f"macro={self._macro_target} rec={macro_rec_state} play={macro_play_state}",
         )
         self._panel_ratio_bar(teleop_win, 3, "progress", progress, width=18, pair_hint=8)
         self._panel_value_bar(teleop_win, 4, "linear", self._linear_speed, 0.05, 1.20, width=18)
@@ -1814,7 +1959,8 @@ class Go2TuiApp:
         self._panel_add(
             teleop_win,
             9,
-            f"seq={len(self._sequence_actions)} teach={len(self._teach_frames)}",
+            f"seq={len(self._sequence_actions)} teach={len(self._teach_frames)} "
+            f"tspeed=x{self._teach_play_speed:.2f} io={self._last_io_label}",
         )
 
         # Controls panel
@@ -1822,10 +1968,10 @@ class Go2TuiApp:
         self._panel_add(keys_win, 2, "A/D: gauche/droite (step)")
         self._panel_add(keys_win, 3, "←/→: yaw  |  ↑/↓: pitch")
         self._panel_add(keys_win, 4, "t: bascule mode STEP ↔ HOLD")
-        self._panel_add(keys_win, 5, "R/F: REC on/off   P/Y: PLAY sequence")
-        self._panel_add(keys_win, 6, "K/G: SAVE sequence  L: LOAD sequence")
-        self._panel_add(keys_win, 7, "c/z: Teach REC/PLAY (manuel + low-level)")
-        self._panel_add(keys_win, 8, "e/.: Teach SAVE/LOAD")
+        self._panel_add(keys_win, 5, "0: macro target SEQ/TEACH")
+        self._panel_add(keys_win, 6, "f/y/g/l: REC PLAY SAVE LOAD (target)")
+        self._panel_add(keys_win, 7, "c/z/e/.: direct Teach REC PLAY SAVE LOAD")
+        self._panel_add(keys_win, 8, ",/: teach speed -/+")
         self._panel_add(keys_win, 9, "x/Espace stop | r reset | q quitter")
 
         # Modes/tuning panel
@@ -1837,7 +1983,11 @@ class Go2TuiApp:
         self._panel_add(
             modes_win, 6, "Tuning amplitude: n/h dist | k/j yaw_step | u/i pitch_step"
         )
-        self._panel_add(modes_win, 7, "V6 Teach: C(rec) V(play) B(save) N(load)")
+        self._panel_add(
+            modes_win,
+            7,
+            f"Workflow macro: target={self._macro_target} | blend={self._teach_play_blend_s:.2f}s",
+        )
         self._panel_add(modes_win, 8, f"profile={self._profile_name} last_cmd={self._last_cmd}")
         self._panel_add(
             modes_win,
@@ -1873,7 +2023,7 @@ class Go2TuiApp:
             0,
             f"iface={self._session.iface} mode={self._control_mode} "
             f"profile={self._profile_name} queue={len(self._pulse_queue)} "
-            f"rec={rec_state} play={play_state} teach={teach_rec_state}/{teach_play_state}",
+            f"macro={self._macro_target} rec={rec_state} play={play_state} teach={teach_rec_state}/{teach_play_state}",
         )
         self._safe_add(
             stdscr,
@@ -1887,13 +2037,14 @@ class Go2TuiApp:
             4,
             0,
             f"seq={len(self._sequence_actions)} teach={len(self._teach_frames)} "
+            f"tspeed=x{self._teach_play_speed:.2f} io={self._last_io_label} "
             f"sfile={self._sequence_file.name} tfile={self._teach_file.name}",
         )
         self._safe_add(
             stdscr,
             5,
             0,
-            "WASD/←→↑↓ move  t step/hold  R/F/P/Y seq  c/z/e/. teach  x stop  q quit",
+            "WASD/←→↑↓ move  0 target  f/y/g/l macro  c/z/e/. teach direct  x stop  q quit",
         )
         max_y, _ = stdscr.getmaxyx()
         max_lines = max(1, max_y - 7)

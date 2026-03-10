@@ -133,6 +133,7 @@ Controles:
 - V4: acceleration progressive + freinage doux + anti-overflow de queue
 - V5: sequence recorder/player (actions teleop + modes)
 - V6: teach mode (manipulation manuelle en `Damp` puis replay articulations)
+  - optimisations: prep teach acceleree + blend court + replay speed factor
 - `t`: bascule le mode de conduite
   - `STEP`: chaque appui envoie une **impulsion** (distance/angle)
   - `HOLD`: maintien de touche via key-repeat (auto-stop si relache)
@@ -149,16 +150,17 @@ Controles:
 - `x` ou `Espace`: stop d'urgence + vide la queue
 - `r`: reset queue (STEP) ou etat hold (HOLD)
 - Sequences custom:
-  - `R` ou `f`: demarrer/arreter l'enregistrement
-  - `P` ou `y`: jouer la sequence en memoire/chargee
-  - `K` ou `g`: sauvegarder la sequence en JSON
-  - `L` ou `l`: charger la sequence depuis le JSON
+  - `0`: choisir la cible macro active (`SEQ` ou `TEACH`)
+  - `f`: demarrer/arreter REC de la cible active
+  - `y`: PLAY de la cible active
+  - `g`: SAVE de la cible active
+  - `l`: LOAD de la cible active
+  - aliases fonctionnels: `R/P/K/L` et `F5/F6/F7/F8`
 - Teach custom (vrai "teach by hand"):
-  - `c`: demarrer/arreter la capture Teach
-  - `z`: jouer la capture Teach (replay low-level)
-  - `e`: sauvegarder le Teach en JSON
-  - `.`: charger le Teach depuis JSON
+  - raccourcis directs (compat): `c/z/e/.` pour REC/PLAY/SAVE/LOAD Teach
+  - `,` / `/`: ralentir / accelerer le replay Teach
   - (fallback) `F9/F10/F11/F12` ou `C/V/B/N` si necessaire
+  - Chargement JSON optimise (cache par fichier + format compact)
   - Pendant `Teach REC`, manipuler le robot doucement a la main (mode compliant).
   - IMPORTANT: garder la zone libre, commencer avec amplitudes faibles.
 - Reglages dynamiques (en live):
@@ -183,7 +185,9 @@ go2ctl --transport dds --iface eth0 --yes tui \
   --control-mode step \
   --hold-timeout 0.24 \
   --sequence-file ./go2_sequence.json \
-  --teach-file ./go2_teach.json
+  --teach-file ./go2_teach.json \
+  --teach-speed 1.25 \
+  --teach-blend 0.35
 ```
 
 ## Structure du projet

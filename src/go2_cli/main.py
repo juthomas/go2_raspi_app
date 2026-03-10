@@ -42,6 +42,8 @@ def run(argv: list[str] | None = None) -> int:
                     hold_timeout_s=args.hold_timeout,
                     sequence_file=args.sequence_file,
                     teach_file=args.teach_file,
+                    teach_speed=args.teach_speed,
+                    teach_blend_s=args.teach_blend,
                 ),
             )
 
