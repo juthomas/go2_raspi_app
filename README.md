@@ -126,34 +126,45 @@ go2ctl --transport dds --iface eth0 --yes tui
 
 Controles:
 
-- Interface stylee avec panneaux (`Robot State`, `Step Teleop`, `Controls`, `Modes`, `Events`)
-- Chaque appui envoie une **impulsion de mouvement** (distance/angle), pas une vitesse continue:
-  - `W/S`: avance/recule d'une distance fixe
-  - `A/D`: lateral gauche/droite d'une distance fixe
-  - `Fleches Gauche/Droite`: rotation yaw d'un angle fixe
-  - `Fleches Haut/Bas`: pitch d'un angle fixe
+- Interface stylee UTF-8 avec panneaux (`Robot State`, `Teleop`, `Controls`, `Modes`, `Events`) + jauges alignees
+- Barres de progression colorees (vert/jaune/rouge + bleu pour progression active)
+- V4: acceleration progressive + freinage doux + anti-overflow de queue
+- `t`: bascule le mode de conduite
+  - `STEP`: chaque appui envoie une **impulsion** (distance/angle)
+  - `HOLD`: maintien de touche via key-repeat (auto-stop si relache)
+- Presets V3:
+  - `[` / `]`: profil precedent/suivant
+  - `F1/F2/F3`: `safe` / `indoor` / `outdoor`
+- Mouvement (corrige gauche/droite):
+  - `W/S`: avance/recule
+  - `A/D`: gauche/droite
+  - `Fleches Gauche/Droite`: yaw gauche/droite
+  - `Fleches Haut/Bas`: pitch +/-
 - `1..9`: modes standards (stand/recovery/damp/trot/free walk...)
 - `m`: tenter `normal-mode`
 - `x` ou `Espace`: stop d'urgence + vide la queue
-- `r`: vide uniquement la queue de mouvements
+- `r`: reset queue (STEP) ou etat hold (HOLD)
 - Reglages dynamiques (en live):
-  - `v/b`: vitesse lineaire +/- 
-  - `n/h`: distance par appui +/- 
-  - `o/p`: vitesse yaw +/- 
-  - `k/j`: angle yaw par appui +/- 
-  - `u/i`: angle pitch par appui +/- 
+  - `v/b`: vitesse lineaire **moins/plus**
+  - `n/h`: distance par appui +/-
+  - `o/p`: vitesse yaw +/-
+  - `k/j`: angle yaw par appui +/-
+  - `u/i`: angle pitch par appui +/-
 - `q`: quitter le TUI
 
 Parametres de demarrage du TUI:
 
 ```bash
 go2ctl --transport dds --iface eth0 --yes tui \
+  --profile indoor \
   --linear-speed 0.35 \
   --yaw-speed 0.9 \
   --pitch-speed 0.8 \
   --step-distance 0.16 \
   --step-yaw-deg 12 \
-  --step-pitch-deg 6
+  --step-pitch-deg 6 \
+  --control-mode step \
+  --hold-timeout 0.24
 ```
 
 ## Structure du projet

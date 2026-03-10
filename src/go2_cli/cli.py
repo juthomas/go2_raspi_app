@@ -100,6 +100,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=6.0,
         help="Angle deg par appui fleche haut/bas (defaut: 6).",
     )
+    tui_parser.add_argument(
+        "--profile",
+        choices=("safe", "indoor", "outdoor"),
+        default=None,
+        help="Preset initial de vitesses/amplitudes (safe, indoor, outdoor).",
+    )
+    tui_parser.add_argument(
+        "--control-mode",
+        choices=("step", "hold"),
+        default="step",
+        help="Mode initial: step (impulsions) ou hold (maintien touche).",
+    )
+    tui_parser.add_argument(
+        "--hold-timeout",
+        type=float,
+        default=0.24,
+        help=(
+            "Temps max entre repeats clavier en mode hold avant auto-stop "
+            "(defaut: 0.24s)."
+        ),
+    )
     return parser
 
 

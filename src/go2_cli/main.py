@@ -37,6 +37,9 @@ def run(argv: list[str] | None = None) -> int:
                     step_distance_m=args.step_distance,
                     step_yaw_deg=args.step_yaw_deg,
                     step_pitch_deg=args.step_pitch_deg,
+                    profile_start=args.profile,
+                    control_mode_start=args.control_mode,
+                    hold_timeout_s=args.hold_timeout,
                 ),
             )
 
