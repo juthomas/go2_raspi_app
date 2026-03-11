@@ -23,7 +23,10 @@ _CODE_HINTS = {
     3203: "API non implementee sur ce firmware.",
     3204: "Parametre API invalide.",
     4202: "Service sport non initialise. Active sport_mode sur le robot.",
-    7004: "Service motion_switcher indisponible ou desactive.",
+    5201: "Echec ServiceSwitch (etat service invalide ou transition refusee).",
+    5202: "Service protege: bascule non autorisee.",
+    7002: "Motion switcher occupe (busy). Reessayer apres un court delai.",
+    7004: "Nom/alias de mode motion_switcher invalide sur ce firmware.",
 }
 
 _JOINT_COUNT = 12
@@ -136,6 +139,10 @@ class DdsTeleopSession:
 
         self._sport_client: Any = None
         self._motion_switcher_client: Any = None
+        self._robot_state_client: Any = None
+        self._sport_client_cls: Any = None
+        self._motion_switcher_client_cls: Any = None
+        self._robot_state_client_cls: Any = None
         self._sport_sub: Any = None
         self._low_sub: Any = None
 
@@ -151,10 +158,17 @@ class DdsTeleopSession:
         self._lowcmd_crc: Any = None
         self._lowcmd_thread: Any = None
         self._lowcmd_lock = Lock()
+        self._lowcmd_pub_cls: Any = None
+        self._lowcmd_topic_cls: Any = None
+        self._lowcmd_msg_cls: Any = None
+        self._lowcmd_crc_cls: Any = None
+        self._lowcmd_thread_cls: Any = None
         self._teach_stream_enabled = False
         self._teach_target_q: list[float] = [0.0] * _JOINT_COUNT
         self._teach_kp = 38.0
         self._teach_kd = 3.2
+        self._mode_before_teach_name = ""
+        self._mode_before_teach_form = ""
 
     @property
     def iface(self) -> str:
@@ -187,33 +201,31 @@ class DdsTeleopSession:
                 "Installe cyclonedds puis unitree_sdk2py en editable depuis son repo."
             ) from exc
 
+        RobotStateClient = None
+        try:
+            from unitree_sdk2py.go2.robot_state.robot_state_client import RobotStateClient
+        except ImportError:
+            RobotStateClient = None
+
         try:
             ChannelFactoryInitialize(0, self._iface)
 
-            self._sport_client = SportClient()
-            self._sport_client.SetTimeout(self._timeout_s)
-            self._sport_client.Init()
-
-            self._motion_switcher_client = MotionSwitcherClient()
-            self._motion_switcher_client.SetTimeout(self._timeout_s)
-            self._motion_switcher_client.Init()
+            self._sport_client_cls = SportClient
+            self._motion_switcher_client_cls = MotionSwitcherClient
+            self._robot_state_client_cls = RobotStateClient
+            self._refresh_rpc_clients()
 
             self._sport_sub = ChannelSubscriber("rt/sportmodestate", SportModeState_)
             self._sport_sub.Init(self._on_sport_state, 1)
             self._low_sub = ChannelSubscriber("rt/lowstate", LowState_)
             self._low_sub.Init(self._on_low_state, 1)
 
-            self._lowcmd_pub = ChannelPublisher("rt/lowcmd", LowCmd_)
-            self._lowcmd_pub.Init()
-            self._lowcmd_crc = CRC()
-            self._lowcmd_msg = unitree_go_msg_dds__LowCmd_()
-            self._init_lowcmd_msg()
-            self._lowcmd_thread = RecurrentThread(
-                interval=0.005,
-                target=self._lowcmd_write_tick,
-                name="go2_teach_lowcmd",
-            )
-            self._lowcmd_thread.Start()
+            # Keep class handles to build/tear down low-level pipeline on demand.
+            self._lowcmd_pub_cls = ChannelPublisher
+            self._lowcmd_topic_cls = LowCmd_
+            self._lowcmd_msg_cls = unitree_go_msg_dds__LowCmd_
+            self._lowcmd_crc_cls = CRC
+            self._lowcmd_thread_cls = RecurrentThread
             self._connected = True
         except Exception as exc:
             raise CommandExecutionError(
@@ -223,17 +235,6 @@ class DdsTeleopSession:
     def close(self) -> None:
         self._connected = False
         self.stop_teach_stream()
-        if self._lowcmd_thread is not None:
-            try:
-                self._lowcmd_thread.Wait(1.0)
-            except Exception:
-                pass
-        self._lowcmd_thread = None
-        if self._lowcmd_pub is not None:
-            self._lowcmd_pub.Close()
-        self._lowcmd_pub = None
-        self._lowcmd_msg = None
-        self._lowcmd_crc = None
         if self._sport_sub is not None:
             self._sport_sub.Close()
         if self._low_sub is not None:
@@ -242,6 +243,34 @@ class DdsTeleopSession:
         self._low_sub = None
         self._sport_client = None
         self._motion_switcher_client = None
+        self._robot_state_client = None
+        self._sport_client_cls = None
+        self._motion_switcher_client_cls = None
+        self._robot_state_client_cls = None
+        self._lowcmd_pub_cls = None
+        self._lowcmd_topic_cls = None
+        self._lowcmd_msg_cls = None
+        self._lowcmd_crc_cls = None
+        self._lowcmd_thread_cls = None
+
+    def _refresh_rpc_clients(self) -> None:
+        if self._sport_client_cls is None or self._motion_switcher_client_cls is None:
+            raise CommandExecutionError("Classes RPC indisponibles (session DDS incomplete).")
+
+        self._sport_client = self._sport_client_cls()
+        self._sport_client.SetTimeout(self._timeout_s)
+        self._sport_client.Init()
+
+        self._motion_switcher_client = self._motion_switcher_client_cls()
+        self._motion_switcher_client.SetTimeout(self._timeout_s)
+        self._motion_switcher_client.Init()
+
+        if self._robot_state_client_cls is not None:
+            self._robot_state_client = self._robot_state_client_cls()
+            self._robot_state_client.SetTimeout(self._timeout_s)
+            self._robot_state_client.Init()
+        else:
+            self._robot_state_client = None
 
     def ensure_normal_mode(self) -> str:
         self._require_connected()
@@ -263,6 +292,226 @@ class DdsTeleopSession:
         if self._strict_normal_mode_flag:
             raise CommandExecutionError(message)
         return f"WARNING: {message}"
+
+    def _switch_sport_mode(self, enabled: bool) -> int | None:
+        if self._robot_state_client is None:
+            return None
+        try:
+            return int(self._robot_state_client.ServiceSwitch("sport_mode", bool(enabled)))
+        except Exception:
+            return None
+
+    def _probe_sport_rpc(self) -> tuple[bool, str]:
+        try:
+            code = int(self._sport_client.StopMove())
+        except Exception as exc:
+            return False, f"probe exception={exc}"
+        if code == 0:
+            return True, "probe=OK"
+        return False, f"probe={code}"
+
+    def probe_high_level(self) -> tuple[bool, str]:
+        self._require_connected()
+        return self._probe_sport_rpc()
+
+    def _check_mode_details(self) -> tuple[int, str, str]:
+        try:
+            code, payload = self._motion_switcher_client.CheckMode()
+        except Exception as exc:
+            return -1, f"exception:{exc}", ""
+        if code != 0:
+            return int(code), "", ""
+        mode_name = ""
+        mode_form = ""
+        if isinstance(payload, dict):
+            mode_name = str(payload.get("name", "")).strip()
+            mode_form = str(payload.get("form", "")).strip()
+        elif payload is not None:
+            mode_name = str(payload).strip()
+        return 0, mode_name, mode_form
+
+    def _check_mode_label(self) -> str:
+        code, mode_name, mode_form = self._check_mode_details()
+        if code == -1:
+            return f"ms.check={mode_name}"
+        if code != 0:
+            return f"ms.check={code}"
+        if mode_form:
+            return f"ms.check=0:{mode_name or '-'}(form={mode_form})"
+        return f"ms.check=0:{mode_name or '-'}"
+
+    def _sport_service_state_label(self) -> tuple[int | None, str]:
+        if self._robot_state_client is None:
+            return None, "svc.sport=n/a"
+        try:
+            code, services = self._robot_state_client.ServiceList()
+        except Exception as exc:
+            return None, f"svc.list=exception:{exc}"
+        if code != 0:
+            return None, f"svc.list={code}"
+        sport_svc = None
+        for svc in services or []:
+            if getattr(svc, "name", "") == "sport_mode":
+                sport_svc = svc
+                break
+        if sport_svc is None:
+            return None, "svc.sport=n/a"
+        status = getattr(sport_svc, "status", None)
+        protect = getattr(sport_svc, "protect", None)
+        try:
+            status_i = int(status)
+        except Exception:
+            status_i = None
+        return status_i, f"svc.sport=status:{status},protect:{protect}"
+
+    def _select_mode_retry(self, mode_alias: str, timeout_s: float) -> tuple[bool, str]:
+        deadline = time.monotonic() + _clamp(float(timeout_s), 0.20, 8.00)
+        last_code = None
+        while time.monotonic() < deadline:
+            try:
+                code, _ = self._motion_switcher_client.SelectMode(mode_alias)
+                code = int(code)
+            except Exception as exc:
+                return False, f"select {mode_alias}=exception:{exc}"
+            last_code = code
+            if code == 0:
+                return True, f"select {mode_alias}=0"
+            if code not in {7002}:
+                return False, f"select {mode_alias}={code}"
+            time.sleep(0.18)
+        return False, f"select {mode_alias}={last_code}"
+
+    def _release_mode_until_empty(self, timeout_s: float = 4.0) -> str:
+        deadline = time.monotonic() + _clamp(float(timeout_s), 0.20, 10.00)
+        last_note = "release=skip"
+        while time.monotonic() < deadline:
+            code, mode_name, mode_form = self._check_mode_details()
+            if code != 0:
+                return f"release check={code}"
+            if not mode_name:
+                return "release=done"
+            try:
+                release_code, _ = self._motion_switcher_client.ReleaseMode()
+                release_code = int(release_code)
+            except Exception as exc:
+                return f"release exception={exc}"
+            last_note = (
+                f"release mode={mode_name}(form={mode_form or '-'}) code={release_code}"
+            )
+            if release_code not in {0, 7002}:
+                return last_note
+            time.sleep(0.22)
+        return last_note
+
+    def debug_state_line(self) -> str:
+        self._require_connected()
+        snap = self.snapshot()
+        sport_age = snap.get("sport_age")
+        low_age = snap.get("low_age")
+        parts = [
+            "DIAG",
+            f"s_age={'n/a' if sport_age is None else f'{float(sport_age):.2f}s'}",
+            f"l_age={'n/a' if low_age is None else f'{float(low_age):.2f}s'}",
+            f"mode={snap.get('mode')}",
+            f"err={snap.get('error_code')}",
+        ]
+
+        with self._lowcmd_lock:
+            parts.append(f"ll_stream={int(self._teach_stream_enabled)}")
+            parts.append(f"ll_pub={int(self._lowcmd_pub is not None)}")
+
+        parts.append(self._check_mode_label())
+        _, svc_label = self._sport_service_state_label()
+        parts.append(svc_label)
+
+        _, probe_msg = self._probe_sport_rpc()
+        parts.append(probe_msg)
+        return " | ".join(parts)
+
+    def rearm_high_level(
+        self, retries: int = 2, force_hard_reset: bool = False
+    ) -> tuple[bool, str]:
+        """Recover sport high-level API after low-level teach usage."""
+        self._require_connected()
+        notes: list[str] = []
+
+        # Release low-level writer first.
+        self.stop_teach_stream()
+
+        for attempt in range(max(0, retries) + 1):
+            # Refresh rpc clients in case transport got stale.
+            try:
+                self._refresh_rpc_clients()
+            except Exception as exc:
+                notes.append(f"motion_init={exc}")
+
+            # 1) If switcher reports an active mode (e.g. mcf), release first.
+            code_before, name_before, form_before = self._check_mode_details()
+            notes.append(
+                f"ms.before={code_before}:{name_before or '-'}:{form_before or '-'}"
+            )
+            if code_before == 0 and name_before:
+                notes.append(self._release_mode_until_empty(timeout_s=2.6 + 0.4 * attempt))
+                code_rel, name_rel, form_rel = self._check_mode_details()
+                notes.append(f"ms.after_release={code_rel}:{name_rel or '-'}:{form_rel or '-'}")
+
+            # 2) Re-enter a high-level mode via motion_switcher aliases.
+            selected = False
+            notes.append(
+                f"mode_hint={self._mode_before_teach_name or '-'}:{self._mode_before_teach_form or '-'}"
+            )
+            alias_order: list[str] = []
+            if self._mode_before_teach_name:
+                alias_order.append(self._mode_before_teach_name)
+            for alias in ("normal", "ai", "advanced"):
+                if alias not in alias_order:
+                    alias_order.append(alias)
+
+            for alias in alias_order:
+                ok_sel, sel_note = self._select_mode_retry(
+                    alias, timeout_s=1.2 + 0.5 * attempt
+                )
+                notes.append(sel_note)
+                code_sel, name_sel, form_sel = self._check_mode_details()
+                notes.append(f"ms.after_{alias}={code_sel}:{name_sel or '-'}:{form_sel or '-'}")
+                if ok_sel:
+                    selected = True
+                    break
+
+            # 3) Best effort: ensure sport_mode service ON.
+            if self._robot_state_client is not None:
+                code_on = self._switch_sport_mode(True)
+                notes.append(f"sport_mode on={code_on}")
+                _, svc_after_label = self._sport_service_state_label()
+                notes.append(svc_after_label)
+            if not selected:
+                notes.append("ms.select=none")
+
+            # Probe with warmup window: sport service can take time to come back.
+            last_probe = "probe=unknown"
+            deadline = time.monotonic() + (2.4 if force_hard_reset else 1.6) + 0.7 * attempt
+            while time.monotonic() < deadline:
+                ok_probe, probe_msg = self._probe_sport_rpc()
+                last_probe = probe_msg
+                if ok_probe:
+                    if force_hard_reset:
+                        return True, "Rearm OK(hard): high-level control restored."
+                    return True, "Rearm OK: high-level control restored."
+                time.sleep(0.18)
+            notes.append(last_probe)
+            _, svc_retry_label = self._sport_service_state_label()
+            notes.append(svc_retry_label)
+            time.sleep(0.16 * (attempt + 1))
+
+        # Late check: sometimes probe becomes healthy just after timeout.
+        ok_final, final_probe = self._probe_sport_rpc()
+        if ok_final:
+            _, final_svc = self._sport_service_state_label()
+            if force_hard_reset:
+                return True, f"Rearm LATE-OK(hard): {final_probe} | {final_svc}"
+            return True, f"Rearm LATE-OK: {final_probe} | {final_svc}"
+
+        return False, "Rearm FAILED: " + " | ".join(notes[-10:])
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -360,13 +609,33 @@ class DdsTeleopSession:
     def prepare_teach_mode(self) -> str:
         self._require_connected()
         events: list[str] = []
-        quick_timeout = _clamp(self._timeout_s * 0.20, 0.25, 1.20)
+        quick_timeout = _clamp(self._timeout_s * 0.45, 0.60, 2.20)
+
+        # Always detach any previous low-level stream before re-entering teach.
+        self.stop_teach_stream()
 
         try:
             self._sport_client.SetTimeout(quick_timeout)
             self._motion_switcher_client.SetTimeout(quick_timeout)
         except Exception:
             pass
+
+        code_prev, name_prev, form_prev = self._check_mode_details()
+        if code_prev == 0:
+            self._mode_before_teach_name = name_prev
+            self._mode_before_teach_form = form_prev
+            events.append(f"mode_before={name_prev or '-'}(form={form_prev or '-'})")
+        else:
+            self._mode_before_teach_name = ""
+            self._mode_before_teach_form = ""
+            events.append(f"mode_before_check={code_prev}")
+
+        try:
+            stop_code = int(self._sport_client.StopMove())
+            if stop_code != 0:
+                events.append(f"StopMove code={stop_code}")
+        except Exception as exc:
+            events.append(f"StopMove exception={exc}")
 
         try:
             damp_code = int(self._sport_client.Damp())
@@ -375,42 +644,10 @@ class DdsTeleopSession:
         except Exception as exc:
             events.append(f"Damp exception={exc}")
 
-        # Fast release of high-level sport mode (avoid slow StandDown loops).
-        mode_name = ""
-        for attempt in range(3):
-            try:
-                check_code, payload = self._motion_switcher_client.CheckMode()
-            except Exception as exc:
-                events.append(f"CheckMode exception={exc}")
-                break
-            if check_code != 0:
-                events.append(f"CheckMode code={check_code}")
-                break
+        # SDK2 canonical low-level handover path: ReleaseMode until empty.
+        events.append(self._release_mode_until_empty(timeout_s=3.2))
+        events.append("handover=release_mode")
 
-            if isinstance(payload, dict):
-                mode_name = str(payload.get("name", "")).strip()
-            elif payload is not None:
-                mode_name = str(payload).strip()
-            if not mode_name:
-                break
-
-            release_code, _ = self._motion_switcher_client.ReleaseMode()
-            if release_code != 0:
-                # Fallback once with StandDown if release is rejected.
-                if attempt == 0:
-                    try:
-                        self._sport_client.StandDown()
-                    except Exception:
-                        pass
-                    release_code, _ = self._motion_switcher_client.ReleaseMode()
-                if release_code != 0:
-                    events.append(f"ReleaseMode code={release_code}")
-                    break
-            time.sleep(0.05)
-
-        self.stop_teach_stream()
-        if mode_name:
-            events.append(f"mode='{mode_name}'")
         try:
             self._sport_client.SetTimeout(self._timeout_s)
             self._motion_switcher_client.SetTimeout(self._timeout_s)
@@ -418,8 +655,68 @@ class DdsTeleopSession:
             pass
         return "Teach mode prepare: OK" if not events else "Teach mode prepare: " + "; ".join(events)
 
+    def _ensure_lowcmd_pipeline(self) -> None:
+        with self._lowcmd_lock:
+            if (
+                self._lowcmd_msg is not None
+                and self._lowcmd_pub is not None
+                and self._lowcmd_crc is not None
+                and self._lowcmd_thread is not None
+            ):
+                return
+
+        if (
+            self._lowcmd_pub_cls is None
+            or self._lowcmd_topic_cls is None
+            or self._lowcmd_msg_cls is None
+            or self._lowcmd_crc_cls is None
+            or self._lowcmd_thread_cls is None
+        ):
+            raise CommandExecutionError("Backend LowCmd indisponible (session DDS incomplete).")
+
+        pub = None
+        try:
+            pub = self._lowcmd_pub_cls("rt/lowcmd", self._lowcmd_topic_cls)
+            pub.Init()
+            msg = self._lowcmd_msg_cls()
+            crc = self._lowcmd_crc_cls()
+            thread = self._lowcmd_thread_cls(
+                interval=0.005,
+                target=self._lowcmd_write_tick,
+                name="go2_teach_lowcmd",
+            )
+        except Exception as exc:
+            if pub is not None:
+                try:
+                    pub.Close()
+                except Exception:
+                    pass
+            raise CommandExecutionError(f"Initialisation LowCmd impossible: {exc}") from exc
+
+        with self._lowcmd_lock:
+            self._lowcmd_pub = pub
+            self._lowcmd_msg = msg
+            self._lowcmd_crc = crc
+            self._lowcmd_thread = thread
+            self._init_lowcmd_msg()
+
+        try:
+            thread.Start()
+        except Exception as exc:
+            with self._lowcmd_lock:
+                self._lowcmd_thread = None
+                self._lowcmd_pub = None
+                self._lowcmd_msg = None
+                self._lowcmd_crc = None
+            try:
+                pub.Close()
+            except Exception:
+                pass
+            raise CommandExecutionError(f"Demarrage thread LowCmd impossible: {exc}") from exc
+
     def start_teach_stream(self, initial_q: list[float], kp: float, kd: float) -> None:
         self._require_connected()
+        self._ensure_lowcmd_pipeline()
         if self._lowcmd_msg is None or self._lowcmd_pub is None or self._lowcmd_crc is None:
             raise CommandExecutionError("LowCmd non initialise.")
         if len(initial_q) < _JOINT_COUNT:
@@ -443,8 +740,45 @@ class DdsTeleopSession:
                 self._teach_target_q[i] = _clamp(float(q[i]), -3.20, 3.20)
 
     def stop_teach_stream(self) -> None:
+        thread_to_stop = None
+        pub_to_close = None
         with self._lowcmd_lock:
             self._teach_stream_enabled = False
+            if (
+                self._lowcmd_msg is not None
+                and self._lowcmd_pub is not None
+                and self._lowcmd_crc is not None
+            ):
+                # Flush neutral lowcmd to release low-level hold.
+                for i in range(20):
+                    mc = self._lowcmd_msg.motor_cmd[i]
+                    mc.mode = 0x01
+                    mc.q = _POS_STOP_F
+                    mc.kp = 0.0
+                    mc.dq = _VEL_STOP_F
+                    mc.kd = 0.0
+                    mc.tau = 0.0
+                self._lowcmd_msg.crc = self._lowcmd_crc.Crc(self._lowcmd_msg)
+                for _ in range(6):
+                    self._lowcmd_pub.Write(self._lowcmd_msg)
+
+            thread_to_stop = self._lowcmd_thread
+            self._lowcmd_thread = None
+            pub_to_close = self._lowcmd_pub
+            self._lowcmd_pub = None
+            self._lowcmd_msg = None
+            self._lowcmd_crc = None
+
+        if thread_to_stop is not None:
+            try:
+                thread_to_stop.Wait(1.0)
+            except Exception:
+                pass
+        if pub_to_close is not None:
+            try:
+                pub_to_close.Close()
+            except Exception:
+                pass
 
     def _init_lowcmd_msg(self) -> None:
         if self._lowcmd_msg is None:
@@ -604,11 +938,14 @@ class Go2TuiApp:
         self._teach_cache_kp: float = self._teach_kp
         self._teach_cache_kd: float = self._teach_kd
         self._last_io_label = "-"
+        self._needs_high_level_rearm = False
 
     def run(self) -> int:
         try:
             self._session.connect()
-            self._events.append(self._session.ensure_normal_mode())
+            ok_hl, msg_hl = self._session.probe_high_level()
+            self._events.append(f"Startup probe: {msg_hl}")
+            self._needs_high_level_rearm = not ok_hl
             curses.wrapper(self._curses_main)
             return 0
         except KeyboardInterrupt:
@@ -654,6 +991,15 @@ class Go2TuiApp:
         if 0 <= key <= 255:
             c_raw = chr(key)
             c = c_raw.lower()
+
+        if c_raw == "M":
+            ok_hl, msg_hl = self._session.rearm_high_level(
+                retries=3, force_hard_reset=True
+            )
+            self._events.append(f"Manual rearm: {msg_hl}")
+            self._events.append(self._session.debug_state_line())
+            self._needs_high_level_rearm = not ok_hl
+            return
 
         # Macro workflow: choose active target, then REC/PLAY/SAVE/LOAD.
         if c == "0":
@@ -945,6 +1291,44 @@ class Go2TuiApp:
             "panic_stop",
         }
 
+    def _joint_snapshot(self) -> tuple[float, ...] | None:
+        snap = self._session.snapshot()
+        q = snap.get("joint_q")
+        if q is None:
+            return None
+        try:
+            n = min(_JOINT_COUNT, len(q))
+            if n <= 0:
+                return None
+            return tuple(float(q[i]) for i in range(n))
+        except Exception:
+            return None
+
+    def _wait_joint_motion(
+        self,
+        baseline_q: tuple[float, ...] | None,
+        timeout_s: float = 1.25,
+        min_delta_rad: float = 0.06,
+    ) -> bool:
+        if baseline_q is None or len(baseline_q) == 0:
+            return True
+        deadline = time.monotonic() + _clamp(float(timeout_s), 0.20, 4.00)
+        while time.monotonic() < deadline:
+            snap = self._session.snapshot()
+            q = snap.get("joint_q")
+            if q is not None:
+                try:
+                    n = min(len(baseline_q), len(q), _JOINT_COUNT)
+                    if n <= 0:
+                        return True
+                    max_delta = max(abs(float(q[i]) - float(baseline_q[i])) for i in range(n))
+                    if max_delta >= float(min_delta_rad):
+                        return True
+                except Exception:
+                    return True
+            time.sleep(0.06)
+        return False
+
     def _invoke_mode_action(self, token: str, from_playback: bool = False) -> None:
         if (self._teach_recording or self._teach_playing) and not from_playback:
             self._events.append("Mode refuse: stop Teach REC/PLAY d'abord.")
@@ -957,24 +1341,137 @@ class Go2TuiApp:
                 self._record_action("mode", token=token)
             return
 
-        action_map: dict[str, tuple[str, Any, bool]] = {
-            "normal_mode": ("NormalMode", self._session.ensure_normal_mode, False),
-            "stand_up": ("StandUp", self._session.stand_up, True),
-            "stand_down": ("StandDown", self._session.stand_down, True),
-            "balance_stand": ("BalanceStand", self._session.balance_stand, True),
-            "recovery_stand": ("RecoveryStand", self._session.recovery_stand, True),
-            "damp": ("Damp", self._session.damp, True),
-            "stop_move": ("StopMove", self._session.stop_move, True),
-            "static_walk": ("StaticWalk", self._session.static_walk, True),
-            "trot_run": ("TrotRun", self._session.trot_run, True),
-            "free_walk": ("FreeWalk", self._session.free_walk, True),
+        # normal_mode explicitly triggers a robust high-level rearm.
+        if token == "normal_mode":
+            ok, msg = self._session.rearm_high_level(retries=3, force_hard_reset=True)
+            self._events.append(msg)
+            self._events.append(self._session.debug_state_line())
+            self._needs_high_level_rearm = not ok
+            if not from_playback:
+                self._record_action("mode", token=token)
+            return
+
+        action_map: dict[str, tuple[str, Any]] = {
+            "stand_up": ("StandUp", self._session.stand_up),
+            "stand_down": ("StandDown", self._session.stand_down),
+            "balance_stand": ("BalanceStand", self._session.balance_stand),
+            "recovery_stand": ("RecoveryStand", self._session.recovery_stand),
+            "damp": ("Damp", self._session.damp),
+            "stop_move": ("StopMove", self._session.stop_move),
+            "static_walk": ("StaticWalk", self._session.static_walk),
+            "trot_run": ("TrotRun", self._session.trot_run),
+            "free_walk": ("FreeWalk", self._session.free_walk),
         }
         if token not in action_map:
             self._events.append(f"mode inconnu: {token}")
             return
 
-        name, func, expect_code = action_map[token]
-        self._call_and_log(name, func, expect_code=expect_code)
+        name, func = action_map[token]
+        needs_motion_confirm = token in {"stand_up", "stand_down"}
+
+        # If teach was used recently OR sport state stream is stale, rearm first.
+        snap = self._session.snapshot()
+        stale_hl = (
+            (snap.get("sport_age") is None)
+            or (snap.get("sport_age") is not None and float(snap["sport_age"]) > 1.2)
+        )
+        if self._needs_high_level_rearm or stale_hl:
+            force_hard = self._needs_high_level_rearm
+            ok, msg = self._session.rearm_high_level(
+                retries=2, force_hard_reset=force_hard
+            )
+            self._events.append(f"Pre-{name} rearm: {msg}")
+            diag_line = self._session.debug_state_line()
+            self._events.append(diag_line)
+            self._needs_high_level_rearm = not ok
+            if not ok:
+                if "probe=OK" in diag_line:
+                    self._events.append(f"Pre-{name} rearm soft-continue (probe OK).")
+                else:
+                    return
+
+        baseline_q = self._joint_snapshot() if needs_motion_confirm else None
+
+        # First attempt.
+        try:
+            code = int(func())
+        except CommandExecutionError as exc:
+            self._events.append(f"{name}: {exc}")
+            return
+        except Exception as exc:
+            self._events.append(f"{name}: exception {exc}")
+            return
+
+        # 3102/4205 are common when sport service got stuck after teach.
+        if code in {3102, 4205}:
+            ok, msg = self._session.rearm_high_level(retries=2, force_hard_reset=True)
+            self._events.append(f"Auto-rearm on {name} (code={code}): {msg}")
+            self._events.append(self._session.debug_state_line())
+            self._needs_high_level_rearm = not ok
+            if ok:
+                try:
+                    code = int(func())
+                except CommandExecutionError as exc:
+                    self._events.append(f"{name}: {exc}")
+                    return
+                except Exception as exc:
+                    self._events.append(f"{name}: exception {exc}")
+                    return
+
+        if code == 0 and needs_motion_confirm:
+            moved = self._wait_joint_motion(baseline_q, timeout_s=1.25, min_delta_rad=0.06)
+            if not moved:
+                self._events.append(f"{name}: ACK sans mouvement, fallback handover.")
+                self._events.append(self._session.debug_state_line())
+                ok, msg = self._session.rearm_high_level(retries=2, force_hard_reset=True)
+                self._events.append(f"Fallback rearm: {msg}")
+                self._events.append(self._session.debug_state_line())
+                self._needs_high_level_rearm = not ok
+                if ok:
+                    try:
+                        rec_code = int(self._session.recovery_stand())
+                    except CommandExecutionError as exc:
+                        self._events.append(f"Fallback RecoveryStand: {exc}")
+                        rec_code = -1
+                    except Exception as exc:
+                        self._events.append(f"Fallback RecoveryStand exception: {exc}")
+                        rec_code = -1
+                    else:
+                        if rec_code != 0:
+                            self._events.append(
+                                f"Fallback RecoveryStand code={rec_code} ({_code_hint(rec_code)})"
+                            )
+                    time.sleep(0.35)
+                    try:
+                        code = int(func())
+                    except CommandExecutionError as exc:
+                        self._events.append(f"{name} retry: {exc}")
+                        return
+                    except Exception as exc:
+                        self._events.append(f"{name} retry exception: {exc}")
+                        return
+                    if code == 0:
+                        moved_retry = self._wait_joint_motion(
+                            baseline_q, timeout_s=1.25, min_delta_rad=0.06
+                        )
+                        if not moved_retry:
+                            self._events.append(f"{name}: ACK sans mouvement apres retry.")
+                            self._events.append(self._session.debug_state_line())
+                            batt = self._session.snapshot().get("battery_soc")
+                            if batt is not None and int(batt) <= 10:
+                                self._events.append(
+                                    "Hint: batterie tres basse, execution motrice possiblement limitee."
+                                )
+                            self._needs_high_level_rearm = True
+                            return
+
+        if code == 0:
+            self._events.append(f"{name}: OK")
+            self._needs_high_level_rearm = False
+        else:
+            self._events.append(f"{name}: code={code} ({_code_hint(code)})")
+            if code in {3102, 4205}:
+                self._needs_high_level_rearm = True
 
         if token == "stop_move":
             self._is_stopped = True
@@ -1139,6 +1636,7 @@ class Go2TuiApp:
         if not self._teach_recording:
             self._clear_motion_intent()
             prep = self._session.prepare_teach_mode()
+            self._needs_high_level_rearm = True
             self._teach_frames = []
             self._teach_recording = True
             self._teach_record_started_at = time.monotonic()
@@ -1149,6 +1647,7 @@ class Go2TuiApp:
             return
 
         self._teach_recording = False
+        self._needs_high_level_rearm = True
         self._teach_record_started_at = 0.0
         duration = self._teach_frames[-1]["t"] if self._teach_frames else 0.0
         self._events.append(
@@ -1202,6 +1701,7 @@ class Go2TuiApp:
 
         self._clear_motion_intent()
         prep = self._session.prepare_teach_mode()
+        self._needs_high_level_rearm = True
         first_q = self._teach_frames[0]["q"]
         start_q = self._session.get_joint_positions() or list(first_q)
         self._teach_play_start_q = [
@@ -1225,9 +1725,16 @@ class Go2TuiApp:
 
     def _stop_teach_playback(self, reason: str | None = None) -> None:
         self._teach_playing = False
+        self._needs_high_level_rearm = True
         self._teach_play_started_at = 0.0
         self._teach_play_idx = 0
         self._session.stop_teach_stream()
+        ok_hl, msg_hl = self._session.rearm_high_level(retries=1, force_hard_reset=True)
+        self._events.append(f"Auto rearm: {msg_hl}")
+        self._events.append(self._session.debug_state_line())
+        self._needs_high_level_rearm = not ok_hl
+        if ok_hl:
+            self._events.append("HL guard leve: mode high-level reutilisable.")
         if reason:
             self._events.append(reason)
 
@@ -1768,6 +2275,7 @@ class Go2TuiApp:
     def _panic_stop(self) -> None:
         if self._teach_recording:
             self._teach_recording = False
+            self._needs_high_level_rearm = True
         if self._teach_playing:
             self._stop_teach_playback()
         self._session.stop_teach_stream()
@@ -1794,6 +2302,7 @@ class Go2TuiApp:
         # Graceful quit: do not send stop/euler if already idle, which can
         # wake the robot on some firmwares.
         self._teach_recording = False
+        self._needs_high_level_rearm = True
         if self._teach_playing:
             self._stop_teach_playback()
         self._session.stop_teach_stream()
@@ -1850,6 +2359,7 @@ class Go2TuiApp:
             if self._teach_playing
             else "off"
         )
+        hl_state = "rearm" if self._needs_high_level_rearm else "ready"
         macro_rec_state = rec_state if self._macro_target == "SEQ" else teach_rec_state
         macro_play_state = play_state if self._macro_target == "SEQ" else teach_play_state
         self._safe_add(stdscr, 0, 0, " " * (max_x - 1), pair=1)
@@ -1863,7 +2373,8 @@ class Go2TuiApp:
             f"profile={self._profile_name} | queue={len(self._pulse_queue)} | "
             f"macro={self._macro_target} | "
             f"rec={rec_state} play={play_state} | "
-            f"teach_rec={teach_rec_state} teach_play={teach_play_state} | q=quit",
+            f"teach_rec={teach_rec_state} teach_play={teach_play_state} | "
+            f"hl={hl_state} | q=quit",
             pair=4,
         )
 
@@ -1934,7 +2445,8 @@ class Go2TuiApp:
             teleop_win,
             2,
             f"mode={self._control_mode} hold={self._hold_timeout_s:.2f}s "
-            f"macro={self._macro_target} rec={macro_rec_state} play={macro_play_state}",
+            f"macro={self._macro_target} rec={macro_rec_state} "
+            f"play={macro_play_state} hl={hl_state}",
         )
         self._panel_ratio_bar(teleop_win, 3, "progress", progress, width=18, pair_hint=8)
         self._panel_value_bar(teleop_win, 4, "linear", self._linear_speed, 0.05, 1.20, width=18)
@@ -1972,7 +2484,7 @@ class Go2TuiApp:
         self._panel_add(keys_win, 6, "f/y/g/l: REC PLAY SAVE LOAD (target)")
         self._panel_add(keys_win, 7, "c/z/e/.: direct Teach REC PLAY SAVE LOAD")
         self._panel_add(keys_win, 8, ",/: teach speed -/+")
-        self._panel_add(keys_win, 9, "x/Espace stop | r reset | q quitter")
+        self._panel_add(keys_win, 9, "M: rearm HL | x/Espace stop | r reset | q quitter")
 
         # Modes/tuning panel
         self._panel_add(modes_win, 1, "Modes: 1 StandUp  2 StandDown  3 Balance  4 Recovery")
@@ -2017,13 +2529,15 @@ class Go2TuiApp:
             if self._teach_playing
             else "off"
         )
+        hl_state = "rearm" if self._needs_high_level_rearm else "ready"
         self._safe_add(
             stdscr,
             1,
             0,
             f"iface={self._session.iface} mode={self._control_mode} "
             f"profile={self._profile_name} queue={len(self._pulse_queue)} "
-            f"macro={self._macro_target} rec={rec_state} play={play_state} teach={teach_rec_state}/{teach_play_state}",
+            f"macro={self._macro_target} rec={rec_state} play={play_state} "
+            f"teach={teach_rec_state}/{teach_play_state} hl={hl_state}",
         )
         self._safe_add(
             stdscr,
@@ -2044,7 +2558,7 @@ class Go2TuiApp:
             stdscr,
             5,
             0,
-            "WASD/←→↑↓ move  0 target  f/y/g/l macro  c/z/e/. teach direct  x stop  q quit",
+            "WASD/←→↑↓ move  0 target  f/y/g/l macro  c/z/e/. teach direct  M rearm  x stop  q quit",
         )
         max_y, _ = stdscr.getmaxyx()
         max_lines = max(1, max_y - 7)

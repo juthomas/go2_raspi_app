@@ -17,6 +17,9 @@ CLI Python pour Raspberry Pi afin de piloter un Unitree GO2 en DDS.
 
 - `stand`: leve le robot (`SportClient.StandUp`)
 - `lie`: couche le robot (`SportClient.StandDown`)
+- `tui`: mode ncurses de pilotage temps reel (teleop + infos robot)
+  - V5: enregistrement/relecture de sequences custom (macros)
+  - V6: vrai mode Teach (capture manuelle articulations + replay low-level)
 - force le mode `normal` avant commande (par defaut)
 - architecture extensible par transport:
   - `dds` (implante)
@@ -83,10 +86,24 @@ pip install -e /home/pigeons/Documents/unitree/unitree_sdk2_python
 
 ## Utilisation
 
-Trouver l'interface Ethernet connectee au robot:
+### Configuration reseau GO2 (important)
+
+Sur Raspberry Pi OS avec NetworkManager, configure une IP statique sur `eth0`
+avant d'utiliser la CLI DDS:
+
+```bash
+sudo nmcli connection add type ethernet ifname eth0 con-name go2-eth0 \
+  ipv4.method manual ipv4.addresses 192.168.123.99/24 \
+  ipv4.never-default yes ipv6.method ignore connection.autoconnect yes
+sudo nmcli connection up go2-eth0
+```
+
+Verification:
 
 ```bash
 ip -br a
+ip route
+ping -c 3 192.168.123.161
 ```
 
 Exemples:
@@ -100,6 +117,9 @@ go2ctl --transport dds --iface eth0 lie
 
 # force uniquement le mode normal
 go2ctl --transport dds --iface eth0 normal-mode
+
+# mode ncurses (teleop clavier)
+go2ctl --transport dds --iface eth0 --yes tui
 ```
 
 Options utiles:
@@ -107,6 +127,79 @@ Options utiles:
 - `--yes`: evite la confirmation interactive avant mouvement
 - `--timeout 15`: timeout RPC en secondes
 - `--no-ensure-normal-mode`: n'impose pas le mode normal
+- `--strict-normal-mode`: rend bloquant l'echec du mode normal
+
+### Mode `tui` (ncurses)
+
+Commande:
+
+```bash
+go2ctl --transport dds --iface eth0 --yes tui
+```
+
+Controles:
+
+- Interface stylee UTF-8 avec panneaux (`Robot State`, `Teleop`, `Controls`, `Modes`, `Events`) + jauges alignees
+- Barres de progression colorees (vert/jaune/rouge + bleu pour progression active)
+- V4: acceleration progressive + freinage doux + anti-overflow de queue
+- V5: sequence recorder/player (actions teleop + modes)
+- V6: teach mode (manipulation manuelle en `Damp` puis replay articulations)
+  - optimisations: prep teach acceleree + blend court + replay speed factor
+- `t`: bascule le mode de conduite
+  - `STEP`: chaque appui envoie une **impulsion** (distance/angle)
+  - `HOLD`: maintien de touche via key-repeat (auto-stop si relache)
+- Presets V3:
+  - `[` / `]`: profil precedent/suivant
+  - `F1/F2/F3`: `safe` / `indoor` / `outdoor`
+- Mouvement (corrige gauche/droite):
+  - `W/S`: avance/recule
+  - `A/D`: gauche/droite
+  - `Fleches Gauche/Droite`: yaw gauche/droite
+  - `Fleches Haut/Bas`: pitch +/-
+- `1..9`: modes standards (stand/recovery/damp/trot/free walk...)
+- `m`: tenter `normal-mode`
+- `x` ou `Espace`: stop d'urgence + vide la queue
+- `r`: reset queue (STEP) ou etat hold (HOLD)
+- Sequences custom:
+  - `0`: choisir la cible macro active (`SEQ` ou `TEACH`)
+  - `f`: demarrer/arreter REC de la cible active
+  - `y`: PLAY de la cible active
+  - `g`: SAVE de la cible active
+  - `l`: LOAD de la cible active
+  - aliases fonctionnels: `R/P/K/L` et `F5/F6/F7/F8`
+- Teach custom (vrai "teach by hand"):
+  - raccourcis directs (compat): `c/z/e/.` pour REC/PLAY/SAVE/LOAD Teach
+  - `,` / `/`: ralentir / accelerer le replay Teach
+  - (fallback) `F9/F10/F11/F12` ou `C/V/B/N` si necessaire
+  - Chargement JSON optimise (cache par fichier + format compact)
+  - Pendant `Teach REC`, manipuler le robot doucement a la main (mode compliant).
+  - IMPORTANT: garder la zone libre, commencer avec amplitudes faibles.
+- Reglages dynamiques (en live):
+  - `v/b`: vitesse lineaire **moins/plus**
+  - `n/h`: distance par appui +/-
+  - `o/p`: vitesse yaw +/-
+  - `k/j`: angle yaw par appui +/-
+  - `u/i`: angle pitch par appui +/-
+- `q`: quitter le TUI
+
+Parametres de demarrage du TUI:
+
+```bash
+go2ctl --transport dds --iface eth0 --yes tui \
+  --profile indoor \
+  --linear-speed 0.35 \
+  --yaw-speed 0.9 \
+  --pitch-speed 0.8 \
+  --step-distance 0.16 \
+  --step-yaw-deg 12 \
+  --step-pitch-deg 6 \
+  --control-mode step \
+  --hold-timeout 0.24 \
+  --sequence-file ./go2_sequence.json \
+  --teach-file ./go2_teach.json \
+  --teach-speed 1.25 \
+  --teach-blend 0.35
+```
 
 ## Structure du projet
 
@@ -114,6 +207,7 @@ Options utiles:
 src/go2_cli/
   main.py                 # entrypoint CLI
   cli.py                  # parse argparse
+  tui.py                  # mode ncurses teleop + etat
   errors.py               # exceptions metier
   config.py               # config runtime
   transports/
@@ -127,7 +221,7 @@ src/go2_cli/
 
 - Cette CLI s'appuie sur le SDK officiel `unitree_sdk2py`.
 - Les commandes posture utilisent le service `sport`.
-- Le mode `normal` est applique via `motion_switcher`.
+- Le mode `normal` est tente via `motion_switcher`; si indisponible, la commande continue avec warning (sauf `--strict-normal-mode`).
 - Avec Python 3.13, `cyclonedds==0.10.2` peut necessiter `CFLAGS="-D_Py_IsFinalizing=Py_IsFinalizing"` a l'installation.
 - Le wheel `unitree_sdk2py` construit depuis le repo peut rater le sous-package `b2`; l'installation editable contourne ce probleme.
 - En cas d'echec, verifier d'abord:

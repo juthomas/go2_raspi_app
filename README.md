@@ -147,6 +147,7 @@ Controles:
   - `Fleches Haut/Bas`: pitch +/-
 - `1..9`: modes standards (stand/recovery/damp/trot/free walk...)
 - `m`: tenter `normal-mode`
+- `M`: rearm manuel high-level (sport service + normal mode)
 - `x` ou `Espace`: stop d'urgence + vide la queue
 - `r`: reset queue (STEP) ou etat hold (HOLD)
 - Sequences custom:
@@ -161,6 +162,7 @@ Controles:
   - `,` / `/`: ralentir / accelerer le replay Teach
   - (fallback) `F9/F10/F11/F12` ou `C/V/B/N` si necessaire
   - Chargement JSON optimise (cache par fichier + format compact)
+  - Rearm high-level auto au startup + avant commandes standards si stream sport stale
   - Pendant `Teach REC`, manipuler le robot doucement a la main (mode compliant).
   - IMPORTANT: garder la zone libre, commencer avec amplitudes faibles.
 - Reglages dynamiques (en live):
