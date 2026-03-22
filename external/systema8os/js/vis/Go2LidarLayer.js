@@ -59,8 +59,39 @@ export class Go2LidarLayer {
     this.mesh = new THREE.Points(geo, mat);
     this.mesh.frustumCulled = false;
     this.mesh.name = "go2_lidar_cloud";
+    this.mesh.renderOrder = 1;
     this.mesh.visible = false;
     this.scene.add(this.mesh);
+
+    /** Persistance des scans précédents pour voir la forme 3D (autre couleur). */
+    this.historyEnabled = options.historyEnabled !== false;
+    this.historyRetentionMs = options.historyRetentionMs ?? 2500;
+    this.historyMaxPoints = options.historyMaxPoints ?? 150000;
+    this.historyColor = options.historyColor ?? 0xff8844;
+    this.historyOpacity = options.historyOpacity ?? 0.45;
+    this.historyPointSize =
+      typeof options.historyPointSize === "number" ? options.historyPointSize : this.pointSize * 0.85;
+    /** @type {{ t: number; count: number; data: Float32Array }[]} */
+    this._historyBatches = [];
+    this._historyPosBuffer = new Float32Array(this.historyMaxPoints * 3);
+
+    const hGeo = new THREE.BufferGeometry();
+    hGeo.setAttribute("position", new THREE.BufferAttribute(this._historyPosBuffer, 3));
+    hGeo.setDrawRange(0, 0);
+    const hMat = new THREE.PointsMaterial({
+      color: this.historyColor,
+      size: this.historyPointSize,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: this.historyOpacity,
+      depthWrite: false,
+    });
+    this.historyMesh = new THREE.Points(hGeo, hMat);
+    this.historyMesh.frustumCulled = false;
+    this.historyMesh.name = "go2_lidar_history";
+    this.historyMesh.renderOrder = 0;
+    this.historyMesh.visible = false;
+    this.scene.add(this.historyMesh);
   }
 
   disconnect() {
@@ -70,6 +101,44 @@ export class Go2LidarLayer {
     pos.needsUpdate = true;
     this._centerSmoothed = null;
     this._scaleLocked = null;
+    this._historyBatches.length = 0;
+    if (this.historyMesh) {
+      this.historyMesh.visible = false;
+      this.historyMesh.geometry.setDrawRange(0, 0);
+      this.historyMesh.geometry.attributes.position.needsUpdate = true;
+    }
+  }
+
+  /**
+   * Met à jour le nuage d’historique : garde les scans récents + fusion dans le buffer.
+   */
+  _pushHistoryFrame(now, n, arr) {
+    if (!this.historyEnabled || n <= 0) return;
+    const copy = new Float32Array(n * 3);
+    copy.set(arr.subarray(0, n * 3));
+    this._historyBatches.push({ t: now, count: n, data: copy });
+
+    const ret = this.historyRetentionMs;
+    while (this._historyBatches.length && now - this._historyBatches[0].t > ret) {
+      this._historyBatches.shift();
+    }
+
+    let total = 0;
+    for (const b of this._historyBatches) total += b.count;
+    while (total > this.historyMaxPoints && this._historyBatches.length) {
+      total -= this._historyBatches[0].count;
+      this._historyBatches.shift();
+    }
+
+    let off = 0;
+    for (const b of this._historyBatches) {
+      this._historyPosBuffer.set(b.data, off);
+      off += b.data.length;
+    }
+    const hAttr = this.historyMesh.geometry.attributes.position;
+    hAttr.needsUpdate = true;
+    this.historyMesh.geometry.setDrawRange(0, off / 3);
+    this.historyMesh.visible = off > 0;
   }
 
   updateFromPayload(payload) {
@@ -156,5 +225,7 @@ export class Go2LidarLayer {
     this.mesh.geometry.setDrawRange(0, n);
     this.mesh.geometry.attributes.position.needsUpdate = true;
     this.mesh.visible = true;
+
+    this._pushHistoryFrame(performance.now(), n, arr);
   }
 }
