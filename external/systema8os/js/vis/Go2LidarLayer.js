@@ -130,6 +130,11 @@ export class Go2LidarLayer {
       this._historyBatches.shift();
     }
 
+    this._mergeHistoryBatchesToBuffer();
+  }
+
+  /** Recopie les lots d’historique dans le buffer géométrie (après push ou changement de durée). */
+  _mergeHistoryBatchesToBuffer() {
     let off = 0;
     for (const b of this._historyBatches) {
       this._historyPosBuffer.set(b.data, off);
@@ -138,7 +143,34 @@ export class Go2LidarLayer {
     const hAttr = this.historyMesh.geometry.attributes.position;
     hAttr.needsUpdate = true;
     this.historyMesh.geometry.setDrawRange(0, off / 3);
-    this.historyMesh.visible = off > 0;
+    this.historyMesh.visible = off > 0 && this.historyEnabled;
+  }
+
+  /**
+   * Durée de conservation du nuage historique (ms), appliquée tout de suite (purge des lots trop vieux).
+   */
+  setHistoryRetentionMs(ms) {
+    const m = Math.round(Number(ms));
+    this.historyRetentionMs = Math.min(120000, Math.max(100, m));
+    const now = performance.now();
+    while (this._historyBatches.length && now - this._historyBatches[0].t > this.historyRetentionMs) {
+      this._historyBatches.shift();
+    }
+    this._mergeHistoryBatchesToBuffer();
+  }
+
+  /** Couleur du nuage instantané (`#rrggbb`). */
+  setCurrentColor(cssHex) {
+    if (this.mesh?.material?.color) {
+      this.mesh.material.color.set(cssHex);
+    }
+  }
+
+  /** Couleur du nuage historique (`#rrggbb`). */
+  setHistoryColor(cssHex) {
+    if (this.historyMesh?.material?.color) {
+      this.historyMesh.material.color.set(cssHex);
+    }
   }
 
   updateFromPayload(payload) {
