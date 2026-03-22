@@ -111,7 +111,51 @@ go2ctl --transport dds --iface eth0 normal-mode
 go2ctl --transport dds --iface eth0 --yes tui
 ```
 
-Options utiles:
+### Pont LiDAR → WebSocket (processus séparé sur le Pi)
+
+Deux programmes **indépendants** : le TUI (`go2ctl` ou `go2ctl_cpp`) d’un côté, et le pont LiDAR de l’autre. Le pont souscrit au topic DDS `sensor_msgs/PointCloud2` (LiDAR intégré Go2) et diffuse chaque frame en **JSON** sur **WebSocket** (idéal pour une autre app qui enregistre le son en parallèle et aligne sur `stamp` / `recv_mono`).
+
+Installation des deps pont (en plus de `unitree_sdk2py` + CycloneDDS) :
+
+```bash
+source .venv/bin/activate
+pip install websockets
+# ou : pip install -e ".[lidar-ws]"
+```
+
+Lancement (autre terminal que le TUI) :
+
+```bash
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765
+```
+
+Connexion depuis la même machine : `ws://127.0.0.1:8765`  
+Depuis un autre appareil sur le LAN : `ws://<IP-du-Pi>:8765`
+
+Options utiles :
+
+- `--topic rt/utlidar/cloud` (défaut) — si aucune donnée, vérifier le nom exact dans la doc Unitree pour ton firmware.
+- `--max-points 4000` / `--stride 2` — réduire la charge réseau (perte de frames acceptable).
+- `--rate-hz 15` — limite l’envoi côté WebSocket.
+- `--include-raw-b64` — inclut le buffer `PointCloud2` brut (plus lourd).
+
+Chaque message JSON contient notamment `stamp.sec` / `stamp.nanosec` (horodatage ROS du nuage), `points: [[x,y,z], ...]`, et `recv_mono` (temps monotonic côté Pi à la réception) pour corrélation avec l’audio enregistré dans ton app.
+
+### systema8os.xt (UI audio 3D + LiDAR GO2)
+
+Le clone **systema8os** est dans `external/systema8os/`. Il inclut une section **GO2 LIDAR** branchée sur le pont WebSocket (`go2_lidar_ws_bridge.py`). Voir `external/systema8os/README.md`.
+
+### Application web mobile (sur le Pi)
+
+Projet **Vite** dans `mobile_companion/` : interface téléphone pour WebSocket LiDAR + enregistrement micro + export JSON. Voir `mobile_companion/README.md`.
+
+```bash
+cd mobile_companion && npm install && npm run dev -- --host 0.0.0.0
+```
+
+Puis ouvre `http://<IP-du-Pi>:5173` sur le téléphone (même réseau).
+
+### Options `go2ctl` (générales)
 
 - `--yes`: evite la confirmation interactive avant mouvement
 - `--timeout 15`: timeout RPC en secondes

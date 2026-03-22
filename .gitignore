@@ -1,1 +1,4 @@
 /.venv
+
+# Clone systema8os copié depuis le Mac (voir external/systema8os/README.md)
+/external/systema8os/app/

@@ -1,0 +1,9 @@
+{
+  "name": "GO2 Companion",
+  "short_name": "GO2",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "description": "LiDAR WebSocket + audio pour Unitree GO2"
+}

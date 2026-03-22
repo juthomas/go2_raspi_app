@@ -16,6 +16,10 @@ dependencies = []
 dds = [
   "cyclonedds==0.10.2",
 ]
+lidar-ws = [
+  "cyclonedds==0.10.2",
+  "websockets>=12",
+]
 
 [project.scripts]
 go2ctl = "go2_cli.main:main"
