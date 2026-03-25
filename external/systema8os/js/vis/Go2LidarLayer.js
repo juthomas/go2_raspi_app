@@ -42,6 +42,9 @@ export class Go2LidarLayer {
     this._scaleLocked = null;
     /** Si défini (>0), utilisé à la place du verrouillage auto. */
     this.fixedScale = typeof options.scale === "number" && options.scale > 0 ? options.scale : null;
+    /** Rotation autour de Y (vertical Three) pour aligner repère mécanique / affichage (rad). Défaut 45°. */
+    this.yawCorrectionRad =
+      typeof options.yawCorrectionRad === "number" ? options.yawCorrectionRad : Math.PI / 4;
 
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(this.maxPoints * 3);
@@ -60,6 +63,7 @@ export class Go2LidarLayer {
     this.mesh.frustumCulled = false;
     this.mesh.name = "go2_lidar_cloud";
     this.mesh.renderOrder = 1;
+    this.mesh.rotation.y = this.yawCorrectionRad;
     this.mesh.visible = false;
     this.scene.add(this.mesh);
 
@@ -90,6 +94,7 @@ export class Go2LidarLayer {
     this.historyMesh.frustumCulled = false;
     this.historyMesh.name = "go2_lidar_history";
     this.historyMesh.renderOrder = 0;
+    this.historyMesh.rotation.y = this.yawCorrectionRad;
     this.historyMesh.visible = false;
     this.scene.add(this.historyMesh);
   }
