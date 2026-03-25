@@ -7,6 +7,9 @@ export class PointCloud {
         this.boxSize = boxSize;
         this.renderedCount = 0;
         
+        // --- LiDAR Sound Mapper reference ---
+        this.lidarMapper = null;  // Set via setLidarMapper()
+
         this.dummy = new THREE.Object3D();
         this.init();
     }
@@ -47,6 +50,14 @@ export class PointCloud {
         this.scene.add(this.dynamicLine);
     }
 
+    /**
+     * Connecte le LidarSoundMapper au nuage de points.
+     * @param {LidarSoundMapper} mapper
+     */
+    setLidarMapper(mapper) {
+        this.lidarMapper = mapper;
+    }
+
     update(frames, getSpatialPos) {
         // Rate limit updates to ~20fps (50ms) to save CPU/GPU bus
         const now = Date.now();
@@ -63,7 +74,9 @@ export class PointCloud {
         }
 
         // Only full update if count changed or forced
-        if (frames.length === this.renderedTotal && !this.forceUpdate) return;
+        // Also force update if LiDAR mapper is active (positions may change)
+        const lidarActive = this.lidarMapper && this.lidarMapper.enabled && this.lidarMapper.isConnected;
+        if (frames.length === this.renderedTotal && !this.forceUpdate && !lidarActive) return;
 
         this.instancedMesh.count = activeCount;
         const vec = new THREE.Vector3();
@@ -71,8 +84,8 @@ export class PointCloud {
 
         // If shifting (FIFO), we must update all indices because index 0 in mesh is now a different frame
         const isShifting = frames.length > this.maxPoints;
-        // Optimization: If appending, start from last rendered count. If shifting, redraw all.
-        const loopStart = isShifting ? 0 : this.renderedCount;
+        // Optimization: If appending, start from last rendered count. If shifting or LiDAR active, redraw all.
+        const loopStart = (isShifting || lidarActive) ? 0 : this.renderedCount;
         
         for (let i = loopStart; i < activeCount; i++) {
             const frameIdx = startIdx + i;
@@ -90,6 +103,18 @@ export class PointCloud {
             vec.y += noiseY;
             vec.z += noiseZ;
 
+            // ========================================================
+            // LIDAR MAPPING — Modulation spatiale par les données LiDAR
+            // ========================================================
+            let lidarScaleMod = 1.0;
+            if (lidarActive) {
+                const mapped = this.lidarMapper.mapFrameToLidar(vec, f, frameIdx);
+                vec.x = mapped.x;
+                vec.y = mapped.y;
+                vec.z = mapped.z;
+                lidarScaleMod = mapped.scaleMod;
+            }
+
             // Clamp
             const hx = this.boxSize/2, hy = this.boxSize, hz = this.boxSize/2;
             vec.x = Math.max(-hx, Math.min(hx, vec.x));
@@ -104,8 +129,9 @@ export class PointCloud {
             }
 
             // Scale & Transform
-            // Static calculation based on capture data
+            // Static calculation based on capture data, modulated by LiDAR density
             let s = (f.pitch > 0) ? Math.max(0.6, f.volume * 12) : 0;
+            s *= lidarScaleMod; // Apply LiDAR density scaling
 
             this.dummy.position.copy(vec);
             this.dummy.rotation.set(frameIdx * 0.1, frameIdx * 0.5, frameIdx * 0.3);
@@ -113,11 +139,13 @@ export class PointCloud {
             this.dummy.updateMatrix();
             this.instancedMesh.setMatrixAt(i, this.dummy.matrix);
 
-            // Color
+            // Color — with LiDAR influence on saturation
             if (f.pitch > 0) {
                 const midi = 69 + 12 * Math.log2(f.pitch / 440);
                 const hue = THREE.MathUtils.clamp((midi - 36) / 60, 0, 1);
-                const light = 0.5;
+                // LiDAR influence: boost lightness in dense LiDAR zones
+                const lidarLightBoost = lidarActive ? (lidarScaleMod - 1.0) * 0.3 : 0;
+                const light = Math.min(0.8, 0.5 + lidarLightBoost);
                 color.setHSL(hue, 0.9, light);
             } else {
                 color.setHex(0x333333);

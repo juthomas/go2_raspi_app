@@ -253,55 +253,8 @@ class App {
             if (g2l) g2l.maxPoints = budget;
         });
 
-        this.setupGo2LidarUi();
-
         this.animate = this.animate.bind(this);
         requestAnimationFrame(this.animate);
-    }
-
-    setupGo2LidarUi() {
-        const slider = document.getElementById('go2-history-retention');
-        const valLabel = document.getElementById('go2-history-retention-val');
-        const colorCur = document.getElementById('go2-color-current');
-        const colorHist = document.getElementById('go2-color-history');
-        if (!this.go2Lidar || !slider || !valLabel || !colorCur || !colorHist) return;
-
-        const applyRetention = () => {
-            const sec = parseFloat(slider.value);
-            const ms = Math.round(sec * 1000);
-            valLabel.textContent = `${sec.toFixed(1)} s`;
-            this.go2Lidar.setHistoryRetentionMs(ms);
-            try {
-                localStorage.setItem('go2_history_ms', String(ms));
-            } catch (_) {}
-        };
-
-        const applyColors = () => {
-            this.go2Lidar.setCurrentColor(colorCur.value);
-            this.go2Lidar.setHistoryColor(colorHist.value);
-            try {
-                localStorage.setItem('go2_color_current', colorCur.value);
-                localStorage.setItem('go2_color_history', colorHist.value);
-            } catch (_) {}
-        };
-
-        try {
-            const ms = parseInt(localStorage.getItem('go2_history_ms'), 10);
-            if (Number.isFinite(ms) && ms >= 100 && ms <= 120000) {
-                slider.value = String(Math.min(15, Math.max(0.2, ms / 1000)));
-            }
-            const cc = localStorage.getItem('go2_color_current');
-            if (cc && /^#[0-9a-fA-F]{6}$/.test(cc)) colorCur.value = cc;
-            const ch = localStorage.getItem('go2_color_history');
-            if (ch && /^#[0-9a-fA-F]{6}$/.test(ch)) colorHist.value = ch;
-        } catch (_) {}
-
-        applyRetention();
-        applyColors();
-
-        slider.addEventListener('input', applyRetention);
-        colorCur.addEventListener('input', applyColors);
-        colorHist.addEventListener('input', applyColors);
     }
 
     setupVideoManager(mgr) {

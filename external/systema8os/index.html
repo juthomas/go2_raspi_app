@@ -84,6 +84,34 @@
                         <button id="btn-go2-lidar-disconnect" type="button" style="flex:1; font-size:9px;">LIDAR OFF</button>
                     </div>
                     <div id="go2-lidar-status" style="font-size:9px; color:#888; margin-top:4px;">OFF</div>
+            <div class="slide-container" style="margin-top:6px;">
+                <label>L. BLEND FACTOR</label>
+                <input type="range" id="lidar-blend-fader" min="0" max="100" value="50">
+            </div>
+            <div class="slide-container">
+                <label>L. ATTRACTION</label>
+                <input type="range" id="lidar-attraction-fader" min="0" max="100" value="30">
+            </div>
+            <div class="slide-container">
+                <label>L. DENSITY RADIUS</label>
+                <input type="range" id="lidar-density-fader" min="1" max="100" value="30">
+            </div>
+            <div class="slide-container">
+                <label>L. MIN DISTANCE</label>
+                <input type="range" id="lidar-min-dist-fader" min="0" max="100" value="0">
+            </div>
+            <div class="slide-container">
+                <label>L. MAX DISTANCE</label>
+                <input type="range" id="lidar-max-dist-fader" min="0" max="100" value="100">
+            </div>
+            <div class="slide-container">
+                <label>L. SMOOTH</label>
+                <input type="range" id="lidar-smooth-fader" min="0" max="100" value="50">
+            </div>
+            <div class="slide-container">
+                <label>L. POINT BUDGET</label>
+                <input type="range" id="lidar-point-budget-fader" min="1" max="100" value="40">
+            </div>
                     <label style="margin-top:8px; display:block;">Historique (durée)</label>
                     <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
                         <input type="range" id="go2-history-retention" min="0.2" max="15" step="0.1" value="2.5" style="flex:1; min-width:0;" />
