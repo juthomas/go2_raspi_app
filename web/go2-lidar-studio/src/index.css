@@ -139,6 +139,43 @@ main {
   height: 100%;
 }
 
+.fps-debug-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 220px;
+  padding: 8px 10px;
+  border: 1px solid #2a3f53;
+  border-radius: 8px;
+  background: rgba(6, 12, 18, 0.82);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.fps-header {
+  font-size: 0.78rem;
+  color: #cae9ff;
+  margin-bottom: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.fps-bars {
+  height: 52px;
+  display: grid;
+  grid-template-columns: repeat(30, 1fr);
+  align-items: end;
+  gap: 2px;
+}
+
+.fps-bar {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  background: linear-gradient(180deg, #89d1ff, #2787c8);
+  border-radius: 2px 2px 0 0;
+  opacity: 0.95;
+}
+
 .robot-stats p {
   margin: 3px 0;
   font-size: 0.8rem;
