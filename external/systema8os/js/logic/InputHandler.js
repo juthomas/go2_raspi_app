@@ -1,6 +1,37 @@
+/** Logs console si ?gpdebug=1 ou localStorage go2_gpdebug=1 */
+function gamepadDebugEnabled() {
+    try {
+        if (new URLSearchParams(location.search).get("gpdebug") === "1") return true;
+        if (localStorage.getItem("go2_gpdebug") === "1") return true;
+    } catch (_) {}
+    return false;
+}
+
 export class InputHandler {
     constructor(app) {
         this.app = app;
+        /** Index préféré après gamepadconnected ; sinon première entrée non nulle. */
+        this._gamepadPreferredIndex = null;
+        this._gpDebug = gamepadDebugEnabled();
+        this._gpFrame = 0;
+        this._gpNoPadLogged = false;
+        this._gpHadPad = false;
+    }
+
+    /**
+     * getGamepads()[0] est souvent null alors qu’une manette (ex. Xbox) est en [1] ou plus
+     * — le testeur OS peut lister la manette mais le site ne réagissait pas.
+     */
+    _pickGamepad(gamepads) {
+        if (!gamepads) return null;
+        const pref = this._gamepadPreferredIndex;
+        if (pref != null && gamepads[pref]) return gamepads[pref];
+        // GamepadList : length peut être 0 sur certains navigateurs tant qu’aucun slot n’est utilisé
+        const n = Math.max(gamepads.length || 0, 8);
+        for (let i = 0; i < n; i++) {
+            if (gamepads[i]) return gamepads[i];
+        }
+        return null;
     }
 
     setupGamepad() {
@@ -8,12 +39,91 @@ export class InputHandler {
             buttons: [],
             cursor: { x: 0.5, y: 0.5 }
         };
+
+        window.addEventListener('gamepadconnected', (e) => {
+            this._gamepadPreferredIndex = e.gamepad.index;
+            const st = document.getElementById('status');
+            if (st) st.innerText = `MANETTE: ${e.gamepad.id.slice(0, 48)}`;
+            const g = e.gamepad;
+            console.info("[Gamepad] gamepadconnected", {
+                id: g.id?.slice?.(0, 80) ?? g.id,
+                index: g.index,
+                mapping: g.mapping,
+                axes: g.axes?.length,
+                buttons: g.buttons?.length,
+            });
+        });
+        window.addEventListener('gamepaddisconnected', (e) => {
+            console.info("[Gamepad] gamepaddisconnected", e.gamepad?.id, "index", e.gamepad?.index);
+            if (e.gamepad.index === this._gamepadPreferredIndex) {
+                this._gamepadPreferredIndex = null;
+            }
+        });
+
+        console.info("[Gamepad] init", {
+            getGamepads: typeof navigator.getGamepads,
+            secureContext: window.isSecureContext,
+            href: location.href,
+            hint: "Ouvre avec ?gpdebug=1 pour des logs détaillés. Manette souvent invisible jusqu'à un bouton appuyé.",
+        });
+
+        window.dumpGamepads = () => {
+            const list = navigator.getGamepads ? navigator.getGamepads() : null;
+            const rows = [];
+            const n = Math.max(list?.length || 0, 8);
+            for (let i = 0; i < n; i++) {
+                const g = list?.[i];
+                rows.push({
+                    slot: i,
+                    connected: !!g,
+                    id: g ? (g.id?.slice?.(0, 60) ?? String(g.id)) : "—",
+                    mapping: g?.mapping ?? "—",
+                });
+            }
+            console.table(rows);
+            return rows;
+        };
+
+        // Aide Chrome/Android : premier tap/clavier “réveille” parfois getGamepads()
+        const prime = () => {
+            try {
+                if (navigator.getGamepads) navigator.getGamepads();
+            } catch (_) {}
+        };
+        window.addEventListener("pointerdown", prime, { once: true, passive: true });
+        window.addEventListener("keydown", prime, { once: true });
         
         const loop = () => {
+            this._gpFrame++;
             const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-            const gp = gamepads[0];
-            
+            const gp = this._pickGamepad(gamepads);
+
+            if (this._gpDebug && this._gpFrame % 120 === 1) {
+                const snap = [];
+                const n = Math.max(gamepads?.length || 0, 8);
+                for (let i = 0; i < n; i++) {
+                    const gi = gamepads[i];
+                    snap.push(gi ? `[${i}] ${gi.id?.slice?.(0, 40) ?? ""}` : `[${i}] null`);
+                }
+                console.log("[Gamepad] getGamepads snapshot", snap.join(" | "));
+            }
+
+            if (!gp && !this._gpNoPadLogged && this._gpFrame > 300) {
+                this._gpNoPadLogged = true;
+                console.warn(
+                    "[Gamepad] Aucune manette vue par la page après ~5s. Causes fréquentes: 1) appuyer sur un bouton sur la manette 2) fenêtre au premier plan 3) autre PC = la manette est sur le PC local, pas sur la machine qui affiche le site — brancher la manette sur le PC où tourne le navigateur."
+                );
+            }
+
             if (gp) {
+                if (!this._gpHadPad) {
+                    this._gpHadPad = true;
+                    console.info("[Gamepad] première frame active", {
+                        id: gp.id?.slice?.(0, 80),
+                        index: gp.index,
+                        mapping: gp.mapping,
+                    });
+                }
                 // Button 0 (A) -> Clear
                 if (gp.buttons[0] && gp.buttons[0].pressed && !this.gamepadState.buttons[0]) {
                     if (this.app.ui.btnClear) this.app.ui.btnClear.click();
@@ -60,7 +170,12 @@ export class InputHandler {
                 this.gamepadState.buttons[5] = gp.buttons[5] ? gp.buttons[5].pressed : false;
 
                 // Button 6 (LT) -> Clear Spatial
-                const ltPressed = (typeof gp.buttons[6] === 'number') ? gp.buttons[6] > 0.5 : gp.buttons[6].pressed;
+                const b6 = gp.buttons[6];
+                const ltPressed = b6
+                    ? typeof b6 === "number"
+                        ? b6 > 0.5
+                        : (b6.pressed || b6.value > 0.5)
+                    : false;
                 if (ltPressed && !this.gamepadState.buttons[6]) {
                      if (this.app.ui.spatialPanel) {
                          const msg = this.app.ui.spatialPanel.clearRecord();
@@ -121,9 +236,13 @@ export class InputHandler {
                     this.app.ui.spatialPanel.setExternalPos(lx, ly);
                 }
 
-                // Right Stick (Axes 2, 3) -> 2D Plan (ScatterPad)
-                let rx = gp.axes[2];
-                let ry = gp.axes[3];
+                // Right Stick (axes 2–3 standard ; certains pads exposent 3–4)
+                let rx = gp.axes.length > 2 ? gp.axes[2] : 0;
+                let ry = gp.axes.length > 3 ? gp.axes[3] : 0;
+                if (gp.axes.length > 5 && Math.abs(rx) < 1e-6 && Math.abs(ry) < 1e-6) {
+                    rx = gp.axes[3];
+                    ry = gp.axes[4];
+                }
                 if (Math.abs(rx) < deadzone) rx = 0;
                 if (Math.abs(ry) < deadzone) ry = 0;
 
@@ -135,10 +254,12 @@ export class InputHandler {
                         // Stick Up (-1) should move Z towards -1 (Front/Top)
                         this.app.scatterPad.updateSpatialFromStick(rx * speed, ry * speed);
                     } else {
-                        // Relative Cursor Movement (Mouse-like)
+                        // Relative Cursor Movement (Mouse-like) — rester en 0..1 pour scanAt
                         const speed = 0.015;
                         this.gamepadState.cursor.x += rx * speed;
                         this.gamepadState.cursor.y -= ry * speed; // Stick Up (-1) -> Canvas Up (+1)
+                        this.gamepadState.cursor.x = Math.max(0, Math.min(1, this.gamepadState.cursor.x));
+                        this.gamepadState.cursor.y = Math.max(0, Math.min(1, this.gamepadState.cursor.y));
 
                         this.app.scatterPad.setExternalCursor(
                             this.gamepadState.cursor.x, 

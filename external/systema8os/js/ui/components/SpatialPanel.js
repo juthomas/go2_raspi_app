@@ -260,7 +260,15 @@ export class SpatialPanel {
     }
 
     setExternalPos(x, z) {
-        if (!this.recordingState.active && this.automation) return;
+        // La manette doit reprendre la main : avant, on retournait si une boucle était
+        // enregistrée, puis animate() écrasait la position avec la lecture / le LFO.
+        if (this.automation) {
+            this.automation = null;
+        }
+        if (this.autoSpeed > 0) {
+            this.autoSpeed = 0;
+            if (this.elements.move) this.elements.move.value = "0";
+        }
 
         if (!this.isDragging) this.dragTarget = 'source';
 

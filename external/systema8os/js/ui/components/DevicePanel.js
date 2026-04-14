@@ -38,10 +38,13 @@ export class DevicePanel {
         }
         this.refreshDevices();
         this.initChannels();
-        navigator.mediaDevices.ondevicechange = () => this.refreshDevices();
+        // En http:// sur IP LAN, mediaDevices peut être undefined — ne pas planter l’app
+        if (navigator.mediaDevices) {
+            navigator.mediaDevices.ondevicechange = () => this.refreshDevices();
+        }
 
-        this.selInput.addEventListener('change', (e) => { if (this.callbacks.onInputDeviceChange) this.callbacks.onInputDeviceChange(e.target.value); });
-        this.selOutput.addEventListener('change', (e) => { if (this.callbacks.onOutputDeviceChange) this.callbacks.onOutputDeviceChange(e.target.value); });
+        if (this.selInput) this.selInput.addEventListener('change', (e) => { if (this.callbacks.onInputDeviceChange) this.callbacks.onInputDeviceChange(e.target.value); });
+        if (this.selOutput) this.selOutput.addEventListener('change', (e) => { if (this.callbacks.onOutputDeviceChange) this.callbacks.onOutputDeviceChange(e.target.value); });
 
         if (this.selMidi) this.selMidi.addEventListener('change', (e) => { if (this.callbacks.onMidiDeviceChange) this.callbacks.onMidiDeviceChange(e.target.value); });
         if (this.selChannel) this.selChannel.addEventListener('change', (e) => { if (this.callbacks.onMidiChannelChange) this.callbacks.onMidiChannelChange(e.target.value); });
@@ -158,6 +161,11 @@ export class DevicePanel {
     }
 
     async refreshDevices() {
+        if (!navigator.mediaDevices?.enumerateDevices) {
+            console.warn("navigator.mediaDevices indisponible (souvent: page en http:// sur IP — utiliser https:// ou localhost).");
+            this._fallbackAudioSelectors();
+            return;
+        }
         try {
             const devices = await navigator.mediaDevices.enumerateDevices();
             
@@ -199,6 +207,24 @@ export class DevicePanel {
 
         } catch(e) {
             console.warn("Could not enumerate devices", e);
+            this._fallbackAudioSelectors();
+        }
+    }
+
+    _fallbackAudioSelectors() {
+        if (this.selInput) {
+            this.selInput.innerHTML = '';
+            const opt = document.createElement('option');
+            opt.value = 'default';
+            opt.text = 'Default (HTTPS requis pour liste des périphériques)';
+            this.selInput.appendChild(opt);
+        }
+        if (this.selOutput) {
+            this.selOutput.innerHTML = '';
+            const opt = document.createElement('option');
+            opt.value = 'default';
+            opt.text = 'Default';
+            this.selOutput.appendChild(opt);
         }
     }
 }

@@ -1,5 +1,6 @@
 import * as tf from '@tensorflow/tfjs';
 import * as blazeface from '@tensorflow-models/blazeface';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
 
 export class VideoManager {
     static faceModel = null;
@@ -173,22 +174,29 @@ export class VideoManager {
         VideoManager.loadingPromise = (async () => {
             try {
                 console.log("Loading detection models...");
-                
+                await tf.ready();
+                try {
+                    await tf.setBackend('webgl');
+                } catch (_) {
+                    await tf.setBackend('cpu');
+                }
+                await tf.ready();
+                // coco-ssd / certains bundles ESM testent encore window.tf
+                if (typeof window !== "undefined") {
+                    window.tf = tf;
+                }
+
                 // Load BlazeFace
                 if (!VideoManager.faceModel) {
                     console.log("Loading BlazeFace...");
                     VideoManager.faceModel = await blazeface.load();
                     console.log("BlazeFace loaded");
                 }
-                
-                // Load RT-DETR for body detection
+
                 if (!VideoManager.bodyModel) {
-                    console.log("Loading RT-DETR body detector...");
-                    // Using COCO-SSD as a lightweight alternative to RT-DETR (which requires custom implementation)
-                    // RT-DETR is not directly available in TensorFlow.js yet, so using a person detection model
-                    const cocoSsd = await import('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/+esm');
+                    console.log("Loading COCO-SSD body detector...");
                     VideoManager.bodyModel = await cocoSsd.load({
-                        base: 'mobilenet_v2' // Faster than lite_mobilenet_v2
+                        base: 'mobilenet_v2',
                     });
                     console.log("Body detector loaded");
                 }

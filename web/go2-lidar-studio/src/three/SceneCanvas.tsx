@@ -1,0 +1,132 @@
+import { useEffect, useRef } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import type { Go2PointCloudMessage, Go2RobotState } from "../types/go2";
+import type { UiSettings } from "../state/useGo2Store";
+import { LidarPointCloudLayer } from "./layers/LidarPointCloudLayer";
+import { RobotStickLayer } from "./layers/RobotStickLayer";
+
+type Props = {
+  payload: Go2PointCloudMessage | null;
+  robotState: Go2RobotState | null;
+  settings: UiSettings;
+};
+
+type SceneRefs = {
+  camera: THREE.PerspectiveCamera;
+  controls: OrbitControls;
+  lidar: LidarPointCloudLayer;
+  robot: RobotStickLayer;
+  grid: THREE.GridHelper;
+  axes: THREE.AxesHelper;
+};
+
+export function SceneCanvas({ payload, robotState, settings }: Props) {
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const sceneRef = useRef<SceneRefs | null>(null);
+
+  useEffect(() => {
+    const mount = mountRef.current;
+    if (!mount) return;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#05070a");
+
+    const camera = new THREE.PerspectiveCamera(65, mount.clientWidth / mount.clientHeight, 0.01, 3000);
+    camera.position.set(2.8, 2.2, 2.8);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(mount.clientWidth, mount.clientHeight);
+    mount.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0.4, 0);
+    controls.update();
+
+    const hemi = new THREE.HemisphereLight("#7ec8ff", "#101010", 0.8);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight("#ffffff", 0.7);
+    dir.position.set(5, 8, 4);
+    scene.add(dir);
+
+    const grid = new THREE.GridHelper(30, 30, "#226688", "#1f2d3a");
+    scene.add(grid);
+    const axes = new THREE.AxesHelper(0.7);
+    scene.add(axes);
+
+    const lidar = new LidarPointCloudLayer(scene, {
+      maxPoints: settings.maxPoints,
+      pointSize: settings.pointSize,
+      historyRetentionMs: settings.historyRetentionSec * 1000,
+      currentColor: settings.currentColor,
+      historyColor: settings.historyColor,
+    });
+    const robot = new RobotStickLayer(scene);
+    robot.setScale(settings.robotScale);
+    robot.setVisible(settings.showRobot);
+    robot.setTrailVisible(settings.showTrail);
+
+    sceneRef.current = { camera, controls, lidar, robot, grid, axes };
+
+    let raf = 0;
+    const animate = () => {
+      controls.update();
+      renderer.render(scene, camera);
+      raf = window.requestAnimationFrame(animate);
+    };
+    animate();
+
+    const onResize = () => {
+      if (!mount) return;
+      camera.aspect = mount.clientWidth / mount.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(mount.clientWidth, mount.clientHeight);
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      controls.dispose();
+      renderer.dispose();
+      mount.removeChild(renderer.domElement);
+      sceneRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const refs = sceneRef.current;
+    if (!refs || !payload) return;
+    refs.lidar.updateFromPayload(payload);
+  }, [payload]);
+
+  useEffect(() => {
+    const refs = sceneRef.current;
+    if (!refs) return;
+    refs.robot.update(robotState ?? undefined);
+    if (settings.followRobot && robotState?.position && Array.isArray(robotState.position)) {
+      const [x = 0, y = 0, z = 0] = robotState.position;
+      refs.controls.target.set(x, z, y);
+    }
+  }, [robotState, settings.followRobot]);
+
+  useEffect(() => {
+    const refs = sceneRef.current;
+    if (!refs) return;
+    refs.lidar.setPointSize(settings.pointSize);
+    refs.lidar.maxPoints = settings.maxPoints;
+    refs.lidar.setCurrentColor(settings.currentColor);
+    refs.lidar.setHistoryColor(settings.historyColor);
+    refs.lidar.setHistoryRetentionMs(settings.historyRetentionSec * 1000);
+    refs.lidar.setHistoryEnabled(settings.showHistory);
+    refs.robot.setVisible(settings.showRobot);
+    refs.robot.setScale(settings.robotScale);
+    refs.robot.setTrailVisible(settings.showTrail);
+    refs.grid.visible = settings.showGrid;
+    refs.axes.visible = settings.showAxes;
+  }, [settings]);
+
+  return <div className="scene-canvas" ref={mountRef} />;
+}

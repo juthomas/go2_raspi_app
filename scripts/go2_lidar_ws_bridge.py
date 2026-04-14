@@ -29,13 +29,35 @@ import time
 from typing import Any
 
 
-def _run_dds_thread(iface: str, topic: str, on_msg: Any, queue_len: int) -> None:
+def _run_dds_thread(
+    iface: str,
+    *,
+    lidar_topic: str,
+    queue_len: int,
+    on_lidar: Any,
+    on_sport: Any,
+    on_low: Any,
+    sport_topic: str,
+    low_topic: str,
+) -> None:
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
+    from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, SportModeState_
     from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_
 
     ChannelFactoryInitialize(0, iface)
-    sub = ChannelSubscriber(topic, PointCloud2_)
-    sub.Init(handler=on_msg, queueLen=queue_len)
+    sub_lidar = ChannelSubscriber(lidar_topic, PointCloud2_)
+    sub_lidar.Init(handler=on_lidar, queueLen=queue_len)
+
+    sub_sport = ChannelSubscriber(sport_topic, SportModeState_)
+    sub_sport.Init(handler=on_sport, queueLen=queue_len)
+
+    sub_low = ChannelSubscriber(low_topic, LowState_)
+    sub_low.Init(handler=on_low, queueLen=queue_len)
+
+    # Keep subscribers strongly referenced for the process lifetime.
+    _subs = [sub_lidar, sub_sport, sub_low]
+    while True:
+        time.sleep(3600.0)
 
 
 def _field_name(f: Any) -> str:
@@ -123,6 +145,52 @@ def _pack_message(
     return payload
 
 
+def _extract_sport_state(msg: Any) -> dict[str, Any]:
+    return {
+        "mode": int(msg.mode),
+        "gait_type": int(msg.gait_type),
+        "position": [float(v) for v in msg.position],
+        "velocity": [float(v) for v in msg.velocity],
+        "yaw_speed": float(msg.yaw_speed),
+        "rpy": [float(v) for v in msg.imu_state.rpy],
+    }
+
+
+def _extract_low_state(msg: Any, include_joints: bool) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "battery_soc": int(msg.bms_state.soc),
+        "power_v": float(msg.power_v),
+        "power_a": float(msg.power_a),
+        "foot_force": [int(v) for v in msg.foot_force],
+    }
+    if include_joints:
+        n = min(20, len(msg.motor_state))
+        data["joint_q"] = [float(msg.motor_state[i].q) for i in range(n)]
+        data["joint_dq"] = [float(msg.motor_state[i].dq) for i in range(n)]
+    return data
+
+
+def _build_robot_state_snapshot(state: dict[str, Any]) -> dict[str, Any] | None:
+    sport = state.get("sport")
+    low = state.get("low")
+    sport_mono = state.get("sport_mono")
+    low_mono = state.get("low_mono")
+    if sport is None and low is None:
+        return None
+
+    now = time.monotonic()
+    out: dict[str, Any] = {}
+    if sport is not None:
+        out.update(sport)
+        if isinstance(sport_mono, float):
+            out["sport_age_s"] = max(0.0, now - sport_mono)
+    if low is not None:
+        out.update(low)
+        if isinstance(low_mono, float):
+            out["low_age_s"] = max(0.0, now - low_mono)
+    return out
+
+
 async def _amain(args: argparse.Namespace) -> None:
     try:
         import websockets
@@ -131,6 +199,13 @@ async def _amain(args: argparse.Namespace) -> None:
 
     box: list[dict[str, Any] | None] = [None]
     count = {"n": 0}
+    state_lock = threading.Lock()
+    robot_state: dict[str, Any] = {
+        "sport": None,
+        "low": None,
+        "sport_mono": None,
+        "low_mono": None,
+    }
 
     def on_lidar(msg: Any) -> None:
         try:
@@ -141,14 +216,45 @@ async def _amain(args: argparse.Namespace) -> None:
                 include_raw_b64=args.include_raw_b64,
             )
             packed["recv_mono"] = time.time()
+            with state_lock:
+                snap = _build_robot_state_snapshot(robot_state)
+            if snap is not None:
+                packed["robot_state"] = snap
             box[0] = packed
             count["n"] += 1
         except Exception as exc:
             box[0] = {"type": "error", "msg": str(exc)}
 
+    def on_sport(msg: Any) -> None:
+        try:
+            data = _extract_sport_state(msg)
+            with state_lock:
+                robot_state["sport"] = data
+                robot_state["sport_mono"] = time.monotonic()
+        except Exception:
+            pass
+
+    def on_low(msg: Any) -> None:
+        try:
+            data = _extract_low_state(msg, include_joints=args.include_joints)
+            with state_lock:
+                robot_state["low"] = data
+                robot_state["low_mono"] = time.monotonic()
+        except Exception:
+            pass
+
     def dds_thread() -> None:
         try:
-            _run_dds_thread(args.iface, args.topic, on_lidar, args.queue_len)
+            _run_dds_thread(
+                args.iface,
+                lidar_topic=args.topic,
+                queue_len=args.queue_len,
+                on_lidar=on_lidar,
+                on_sport=on_sport,
+                on_low=on_low,
+                sport_topic=args.sport_topic,
+                low_topic=args.low_topic,
+            )
         except Exception as exc:
             box[0] = {"type": "error", "msg": f"DDS init/subscribe: {exc}"}
 
@@ -178,6 +284,8 @@ async def _amain(args: argparse.Namespace) -> None:
                     {
                         "type": "hello",
                         "topic": args.topic,
+                        "sport_topic": args.sport_topic,
+                        "low_topic": args.low_topic,
                         "iface": args.iface,
                     }
                 )
@@ -252,6 +360,16 @@ def main() -> None:
         default="rt/utlidar/cloud",
         help="Topic DDS sensor_msgs/PointCloud2 (adapter si besoin, voir doc Unitree).",
     )
+    p.add_argument(
+        "--sport-topic",
+        default="rt/sportmodestate",
+        help="Topic DDS SportModeState (position/vitesse/attitude).",
+    )
+    p.add_argument(
+        "--low-topic",
+        default="rt/lowstate",
+        help="Topic DDS LowState (batterie/joints).",
+    )
     p.add_argument("--host", default="0.0.0.0", help="Bind WebSocket")
     p.add_argument("--port", type=int, default=8765, help="Port WebSocket")
     p.add_argument("--max-points", type=int, default=4000, help="Max points xyz par message (0 = tous)")
@@ -260,6 +378,11 @@ def main() -> None:
     p.add_argument("--broadcast-period", type=float, default=0.02, help="Période boucle envoi WS (s)")
     p.add_argument("--rate-hz", type=float, default=0.0, help="Limite envoi WS approx (0 = illimité)")
     p.add_argument("--include-raw-b64", action="store_true", help="Inclure data_b64 (nuage brut)")
+    p.add_argument(
+        "--include-joints",
+        action="store_true",
+        help="Inclure joint_q/joint_dq (orientation articulations) dans robot_state.",
+    )
     args = p.parse_args()
     asyncio.run(_amain(args))
 
