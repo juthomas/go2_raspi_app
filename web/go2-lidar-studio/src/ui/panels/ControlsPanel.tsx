@@ -21,6 +21,11 @@ export function ControlsPanel({
   onDisconnect,
   onSettingsChange,
 }: Props) {
+  const pos = Array.isArray(robotState?.position) ? robotState.position : [];
+  const rpy = Array.isArray(robotState?.rpy) ? robotState.rpy : [];
+  const jointQ = Array.isArray(robotState?.joint_q) ? robotState.joint_q : [];
+  const fmt = (v: unknown, d = 3) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "--");
+
   return (
     <div className="controls-panel">
       <section>
@@ -144,6 +149,19 @@ export function ControlsPanel({
           <p>Battery: {robotState?.battery_soc ?? "--"}%</p>
           <p>Power: {robotState?.power_v?.toFixed(1) ?? "--"}V / {robotState?.power_a?.toFixed(1) ?? "--"}A</p>
           <p>Mode: {robotState?.mode ?? "--"} | Gait: {robotState?.gait_type ?? "--"}</p>
+          <p>
+            Position XYZ: [{fmt(pos[0])}, {fmt(pos[1])}, {fmt(pos[2])}]
+          </p>
+          <p>
+            RPY: [{fmt(rpy[0])}, {fmt(rpy[1])}, {fmt(rpy[2])}]
+          </p>
+          <div className="joint-grid">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <span key={i}>
+                q{i}: {fmt(jointQ[i])}
+              </span>
+            ))}
+          </div>
         </div>
       </section>
 

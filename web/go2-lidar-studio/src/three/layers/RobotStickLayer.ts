@@ -8,6 +8,14 @@ const LEG_BASE_OFFSETS = {
   rr: new THREE.Vector3(-0.2, 0, -0.14),
 };
 
+// Unitree low_state order is typically: FR, FL, RR, RL (3 joints each).
+const LEG_JOINT_INDEX: Record<keyof typeof LEG_BASE_OFFSETS, [number, number, number]> = {
+  fr: [0, 1, 2],
+  fl: [3, 4, 5],
+  rr: [6, 7, 8],
+  rl: [9, 10, 11],
+};
+
 function rosToThreePosition(pos: number[]): THREE.Vector3 {
   const [x = 0, y = 0, z = 0] = pos;
   return new THREE.Vector3(x, z, y);
@@ -117,29 +125,43 @@ export class RobotStickLayer {
       neckFront,
     ];
 
-    segments.push(...this.buildLeg("fl", 0, jointQ));
-    segments.push(...this.buildLeg("fr", 3, jointQ));
-    segments.push(...this.buildLeg("rl", 6, jointQ));
-    segments.push(...this.buildLeg("rr", 9, jointQ));
+    segments.push(...this.buildLeg("fl", jointQ));
+    segments.push(...this.buildLeg("fr", jointQ));
+    segments.push(...this.buildLeg("rl", jointQ));
+    segments.push(...this.buildLeg("rr", jointQ));
     return segments;
   }
 
-  private buildLeg(
-    leg: keyof typeof LEG_BASE_OFFSETS,
-    jointOffset: number,
-    jointQ?: number[],
-  ): THREE.Vector3[] {
+  private buildLeg(leg: keyof typeof LEG_BASE_OFFSETS, jointQ?: number[]): THREE.Vector3[] {
     const hip = LEG_BASE_OFFSETS[leg].clone().setY(0.14);
-    const qHip = Number(jointQ?.[jointOffset] ?? 0);
-    const qThigh = Number(jointQ?.[jointOffset + 1] ?? 0.8);
-    const qCalf = Number(jointQ?.[jointOffset + 2] ?? -1.4);
+    const [i0, i1, i2] = LEG_JOINT_INDEX[leg];
+    const qHip = Number(jointQ?.[i0] ?? 0);
+    const qThigh = Number(jointQ?.[i1] ?? 0.8);
+    const qCalf = Number(jointQ?.[i2] ?? -1.4);
+
+    // Mirror abduction/adduction direction for right side legs.
+    const latSign = leg === "fr" || leg === "rr" ? -1 : 1;
 
     const upperLen = 0.2;
     const lowerLen = 0.2;
-    const knee = hip.clone().add(new THREE.Vector3(0, -upperLen * Math.cos(qThigh), upperLen * Math.sin(qHip)));
-    const foot = knee
-      .clone()
-      .add(new THREE.Vector3(0, -lowerLen * Math.cos(qThigh + qCalf), lowerLen * Math.sin(qHip) * 0.6));
+
+    // Simple 3D stick-leg IK-like approximation:
+    // - thigh/calf drive sagittal motion (x,y)
+    // - hip roll drives lateral displacement (z)
+    const knee = hip.clone().add(
+      new THREE.Vector3(
+        -upperLen * Math.sin(qThigh),
+        -upperLen * Math.cos(qThigh),
+        latSign * upperLen * Math.sin(qHip),
+      ),
+    );
+    const foot = knee.clone().add(
+      new THREE.Vector3(
+        -lowerLen * Math.sin(qThigh + qCalf),
+        -lowerLen * Math.cos(qThigh + qCalf),
+        latSign * lowerLen * Math.sin(qHip) * 0.55,
+      ),
+    );
 
     return [hip, knee, knee, foot];
   }
