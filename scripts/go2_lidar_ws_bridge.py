@@ -194,6 +194,7 @@ def _build_robot_state_snapshot(state: dict[str, Any]) -> dict[str, Any] | None:
 async def _amain(args: argparse.Namespace) -> None:
     try:
         import websockets
+        from websockets.exceptions import ConnectionClosed
     except ImportError as e:
         raise SystemExit("Installe websockets: pip install websockets") from e
 
@@ -292,6 +293,9 @@ async def _amain(args: argparse.Namespace) -> None:
             )
             async for _ in ws:
                 pass
+        except ConnectionClosed as exc:
+            # Normal enough on flaky Wi-Fi/mobile clients: avoid noisy traceback.
+            print(f"[go2_lidar_ws] client deconnecte ({ra}): code={exc.code} reason={exc.reason!r}")
         finally:
             await unregister(ws)
 
@@ -338,7 +342,9 @@ async def _amain(args: argparse.Namespace) -> None:
     print(f"[go2_lidar_ws] ws://{host}:{port}  topic={args.topic} iface={args.iface}")
 
     # Autoriser les navigateurs ouverts sur un autre port (ex. :8080 vs :8765) — même host, origine différente
-    serve_kw: dict[str, Any] = {"ping_interval": 20, "ping_timeout": 20}
+    ping_interval: float | None = args.ws_ping_interval if args.ws_ping_interval > 0 else None
+    ping_timeout: float | None = args.ws_ping_timeout if args.ws_ping_timeout > 0 else None
+    serve_kw: dict[str, Any] = {"ping_interval": ping_interval, "ping_timeout": ping_timeout}
     try:
         import inspect
 
@@ -377,6 +383,18 @@ def main() -> None:
     p.add_argument("--queue-len", type=int, default=2, help="File DDS (petit = frames récentes seulement)")
     p.add_argument("--broadcast-period", type=float, default=0.02, help="Période boucle envoi WS (s)")
     p.add_argument("--rate-hz", type=float, default=0.0, help="Limite envoi WS approx (0 = illimité)")
+    p.add_argument(
+        "--ws-ping-interval",
+        type=float,
+        default=30.0,
+        help="Ping keepalive WS (s). <=0 pour desactiver.",
+    )
+    p.add_argument(
+        "--ws-ping-timeout",
+        type=float,
+        default=60.0,
+        help="Timeout keepalive WS (s). <=0 pour desactiver.",
+    )
     p.add_argument("--include-raw-b64", action="store_true", help="Inclure data_b64 (nuage brut)")
     p.add_argument(
         "--include-joints",

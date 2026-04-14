@@ -8,12 +8,13 @@ const LEG_BASE_OFFSETS = {
   rr: new THREE.Vector3(-0.2, 0, -0.14),
 };
 
-// Unitree low_state order is typically: FR, FL, RR, RL (3 joints each).
+// Mapping tuned for this bridge/setup: FL, FR, RL, RR (3 joints each).
+// If firmware/topic order differs, this table is the single place to adjust.
 const LEG_JOINT_INDEX: Record<keyof typeof LEG_BASE_OFFSETS, [number, number, number]> = {
-  fr: [0, 1, 2],
-  fl: [3, 4, 5],
-  rr: [6, 7, 8],
-  rl: [9, 10, 11],
+  fl: [0, 1, 2],
+  fr: [3, 4, 5],
+  rl: [6, 7, 8],
+  rr: [9, 10, 11],
 };
 
 function rosToThreePosition(pos: number[]): THREE.Vector3 {
@@ -81,7 +82,8 @@ export class RobotStickLayer {
     const roll = Number(rpy[0] ?? 0);
     const pitch = Number(rpy[1] ?? 0);
     const yaw = Number(rpy[2] ?? 0);
-    this.root.rotation.set(roll, yaw, pitch);
+    // Sign fix on pitch: positive nose-up in robot frame should lift stick front visually.
+    this.root.rotation.set(roll, yaw, -pitch);
 
     const points = this.computeStickPoints(robotState.joint_q);
     const arr = this.line.geometry.attributes.position.array as Float32Array;
