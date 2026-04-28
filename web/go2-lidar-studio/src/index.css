@@ -152,6 +152,36 @@ main {
   pointer-events: none;
 }
 
+.webrtc-video-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 320px;
+  background: rgba(6, 12, 18, 0.9);
+  border: 1px solid #2a3f53;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.webrtc-video-overlay.hidden {
+  display: none;
+}
+
+.webrtc-video-status {
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  color: #cae9ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  border-bottom: 1px solid #2a3f53;
+}
+
+.webrtc-video-overlay video {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #000;
+}
+
 .fps-header {
   font-size: 0.78rem;
   color: #cae9ff;

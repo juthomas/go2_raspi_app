@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { SceneCanvas } from "../three/SceneCanvas";
 import { useGo2Store } from "../state/useGo2Store";
 import { ControlsPanel } from "../ui/panels/ControlsPanel";
+import { Go2WebRtcVideo } from "../video/Go2WebRtcVideo";
 
 export function App() {
   const { state, actions } = useGo2Store();
@@ -43,6 +44,10 @@ export function App() {
 
       <main>
         <SceneCanvas payload={state.lastPayload} robotState={state.robotState} settings={state.settings} />
+        <Go2WebRtcVideo
+          enabled={state.settings.webrtcVideoEnabled}
+          baseUrl={state.settings.webrtcVideoUrl}
+        />
         <div className="fps-debug-overlay">
           <div className="fps-header">WS frames/s: {currentFps}</div>
           <div className="fps-bars">

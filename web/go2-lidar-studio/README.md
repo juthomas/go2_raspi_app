@@ -4,6 +4,7 @@ Standalone web app (Vite + React + TypeScript + Three.js) to visualize:
 - live Go2 LiDAR point clouds from the WebSocket bridge,
 - temporal cloud persistence (history trail),
 - a simple stick robot model using `robot_state` (position, RPY, joints).
+- optional live front camera overlay through WebRTC.
 
 ## Features
 
@@ -13,6 +14,7 @@ Standalone web app (Vite + React + TypeScript + Three.js) to visualize:
 - Stick robot rendering with pose updates from `robot_state`
 - Robot trail and optional camera follow mode
 - Scene toggles (grid, axes)
+- Optional WebRTC video overlay from `go2_video_webrtc_bridge.py`
 - UI preference persistence through `localStorage`
 
 ## Project structure
@@ -48,6 +50,24 @@ python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --include-joints
 ```
 
 4. In the app, set bridge URL (`ws://<ip-du-pi>:8765`) and click Connect.
+
+## Optional camera WebRTC bridge
+
+Install Python deps on the Pi (same venv as the bridge):
+
+```bash
+pip install aiohttp aiortc av opencv-python
+```
+
+Run the camera bridge:
+
+```bash
+python3 scripts/go2_video_webrtc_bridge.py --iface eth0 --port 8081 --fps 15
+```
+
+Then in GO2 LiDAR Studio:
+- enable `Enable WebRTC video overlay`
+- set `WebRTC bridge URL` to `http://<ip-du-pi>:8081`
 
 ## Data contract expected
 

@@ -49,6 +49,22 @@ export function ControlsPanel({
           <button onClick={onDisconnect}>Disconnect</button>
         </div>
         <p className={`status ${status}`}>{statusText}</p>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={settings.webrtcVideoEnabled}
+            onChange={(e) => onSettingsChange({ webrtcVideoEnabled: e.target.checked })}
+          />
+          Enable WebRTC video overlay
+        </label>
+        <label>
+          WebRTC bridge URL
+          <input
+            value={settings.webrtcVideoUrl}
+            onChange={(e) => onSettingsChange({ webrtcVideoUrl: e.target.value })}
+            placeholder="http://127.0.0.1:8081"
+          />
+        </label>
       </section>
 
       <section>

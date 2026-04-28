@@ -6,6 +6,8 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 export type UiSettings = {
   wsUrl: string;
+  webrtcVideoEnabled: boolean;
+  webrtcVideoUrl: string;
   pointSize: number;
   maxPoints: number;
   historyRetentionSec: number;
@@ -36,6 +38,8 @@ const SETTINGS_KEY = "go2_lidar_studio_settings_v1";
 
 const DEFAULT_SETTINGS: UiSettings = {
   wsUrl: "",
+  webrtcVideoEnabled: false,
+  webrtcVideoUrl: "",
   pointSize: 0.08,
   maxPoints: 25000,
   historyRetentionSec: 2.5,
@@ -57,11 +61,26 @@ const DEFAULT_SETTINGS: UiSettings = {
 function loadSettings(): UiSettings {
   try {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { ...DEFAULT_SETTINGS, wsUrl: Go2BridgeClient.defaultUrl() };
+    if (!raw) {
+      return {
+        ...DEFAULT_SETTINGS,
+        wsUrl: Go2BridgeClient.defaultUrl(),
+        webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
+      };
+    }
     const parsed = JSON.parse(raw) as Partial<UiSettings>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    return {
+      ...DEFAULT_SETTINGS,
+      wsUrl: Go2BridgeClient.defaultUrl(),
+      webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
+      ...parsed,
+    };
   } catch {
-    return { ...DEFAULT_SETTINGS, wsUrl: Go2BridgeClient.defaultUrl() };
+    return {
+      ...DEFAULT_SETTINGS,
+      wsUrl: Go2BridgeClient.defaultUrl(),
+      webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
+    };
   }
 }
 
