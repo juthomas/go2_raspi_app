@@ -25,6 +25,10 @@ export function ControlsPanel({
   const rpy = Array.isArray(robotState?.rpy) ? robotState.rpy : [];
   const jointQ = Array.isArray(robotState?.joint_q) ? robotState.joint_q : [];
   const fmt = (v: unknown, d = 3) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "--");
+  const parseOr = (raw: string, fallback: number) => {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  };
 
   return (
     <div className="controls-panel">
@@ -129,6 +133,46 @@ export function ControlsPanel({
             onChange={(e) => onSettingsChange({ robotScale: Number(e.target.value) })}
           />
         </label>
+        <label>
+          Environment scale ({settings.envScale.toFixed(2)})
+          <input
+            type="range"
+            min={0.1}
+            max={20}
+            step={0.1}
+            value={settings.envScale}
+            onChange={(e) => onSettingsChange({ envScale: Number(e.target.value) })}
+          />
+        </label>
+        <div className="offset-grid">
+          <label>
+            Offset X
+            <input
+              type="number"
+              step={0.01}
+              value={settings.envOffsetX}
+              onChange={(e) => onSettingsChange({ envOffsetX: parseOr(e.target.value, settings.envOffsetX) })}
+            />
+          </label>
+          <label>
+            Offset Y
+            <input
+              type="number"
+              step={0.01}
+              value={settings.envOffsetY}
+              onChange={(e) => onSettingsChange({ envOffsetY: parseOr(e.target.value, settings.envOffsetY) })}
+            />
+          </label>
+          <label>
+            Offset Z
+            <input
+              type="number"
+              step={0.01}
+              value={settings.envOffsetZ}
+              onChange={(e) => onSettingsChange({ envOffsetZ: parseOr(e.target.value, settings.envOffsetZ) })}
+            />
+          </label>
+        </div>
         <label className="checkbox">
           <input
             type="checkbox"

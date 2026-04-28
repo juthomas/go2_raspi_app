@@ -29,6 +29,8 @@ export class RobotStickLayer {
   private readonly trailPoints: THREE.Vector3[] = [];
   private readonly trailGeometry = new THREE.BufferGeometry();
   private scale = 1;
+  private envScale = 1;
+  private readonly envOffset = new THREE.Vector3(0, 0, 0);
 
   constructor(scene: THREE.Scene) {
     this.root = new THREE.Group();
@@ -62,6 +64,15 @@ export class RobotStickLayer {
     this.positionTrail.visible = visible;
   }
 
+  setEnvTransform(scale: number, offsetX: number, offsetY: number, offsetZ: number): void {
+    this.envScale = Math.max(0.01, Math.min(100, Number(scale) || 1));
+    this.envOffset.set(
+      Number.isFinite(offsetX) ? offsetX : 0,
+      Number.isFinite(offsetY) ? offsetY : 0,
+      Number.isFinite(offsetZ) ? offsetZ : 0,
+    );
+  }
+
   resetTrail(): void {
     this.trailPoints.length = 0;
     this.trailGeometry.setFromPoints([]);
@@ -74,7 +85,8 @@ export class RobotStickLayer {
     }
     this.root.visible = true;
 
-    const worldPos = rosToThreePosition((robotState.position as number[]) ?? [0, 0, 0]);
+    const rawPos = rosToThreePosition((robotState.position as number[]) ?? [0, 0, 0]);
+    const worldPos = rawPos.multiplyScalar(this.envScale).add(this.envOffset);
     this.root.position.copy(worldPos);
     this.pushTrailPoint(worldPos);
 

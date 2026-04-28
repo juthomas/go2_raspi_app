@@ -25,6 +25,15 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<SceneRefs | null>(null);
 
+  const mapRobotPosToScene = (rosPos: number[]) => {
+    const [x = 0, y = 0, z = 0] = rosPos;
+    return new THREE.Vector3(
+      x * settings.envScale + settings.envOffsetX,
+      z * settings.envScale + settings.envOffsetY,
+      y * settings.envScale + settings.envOffsetZ,
+    );
+  };
+
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -65,6 +74,7 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
     });
     const robot = new RobotStickLayer(scene);
     robot.setScale(settings.robotScale);
+    robot.setEnvTransform(settings.envScale, settings.envOffsetX, settings.envOffsetY, settings.envOffsetZ);
     robot.setVisible(settings.showRobot);
     robot.setTrailVisible(settings.showTrail);
 
@@ -107,10 +117,17 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
     if (!refs) return;
     refs.robot.update(robotState ?? undefined);
     if (settings.followRobot && robotState?.position && Array.isArray(robotState.position)) {
-      const [x = 0, y = 0, z = 0] = robotState.position;
-      refs.controls.target.set(x, z, y);
+      const p = mapRobotPosToScene(robotState.position as number[]);
+      refs.controls.target.set(p.x, p.y, p.z);
     }
-  }, [robotState, settings.followRobot]);
+  }, [
+    robotState,
+    settings.followRobot,
+    settings.envScale,
+    settings.envOffsetX,
+    settings.envOffsetY,
+    settings.envOffsetZ,
+  ]);
 
   useEffect(() => {
     const refs = sceneRef.current;
@@ -123,6 +140,12 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
     refs.lidar.setHistoryEnabled(settings.showHistory);
     refs.robot.setVisible(settings.showRobot);
     refs.robot.setScale(settings.robotScale);
+    refs.robot.setEnvTransform(
+      settings.envScale,
+      settings.envOffsetX,
+      settings.envOffsetY,
+      settings.envOffsetZ,
+    );
     refs.robot.setTrailVisible(settings.showTrail);
     refs.grid.visible = settings.showGrid;
     refs.axes.visible = settings.showAxes;

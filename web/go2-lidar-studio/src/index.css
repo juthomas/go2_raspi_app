@@ -189,6 +189,16 @@ main {
   gap: 4px 10px;
 }
 
+.offset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.offset-grid label {
+  margin-bottom: 0;
+}
+
 .joint-grid span {
   font-size: 0.78rem;
   color: #bfd3e7;

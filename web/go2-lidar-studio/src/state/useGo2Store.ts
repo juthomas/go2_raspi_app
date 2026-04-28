@@ -15,6 +15,10 @@ export type UiSettings = {
   showRobot: boolean;
   robotScale: number;
   showTrail: boolean;
+  envScale: number;
+  envOffsetX: number;
+  envOffsetY: number;
+  envOffsetZ: number;
   showGrid: boolean;
   showAxes: boolean;
   followRobot: boolean;
@@ -41,6 +45,10 @@ const DEFAULT_SETTINGS: UiSettings = {
   showRobot: true,
   robotScale: 1,
   showTrail: true,
+  envScale: 1,
+  envOffsetX: 0,
+  envOffsetY: 0,
+  envOffsetZ: 0,
   showGrid: true,
   showAxes: true,
   followRobot: false,
