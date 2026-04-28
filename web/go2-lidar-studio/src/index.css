@@ -182,6 +182,72 @@ main {
   background: #000;
 }
 
+.control-overlay {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 220px;
+  background: rgba(6, 12, 18, 0.9);
+  border: 1px solid #2a3f53;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.control-overlay.hidden {
+  display: none;
+}
+
+.control-header {
+  font-size: 0.75rem;
+  color: #cae9ff;
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.control-grid button {
+  padding: 10px 0;
+}
+
+.control-grid button:nth-child(1) {
+  grid-column: 2;
+}
+
+.control-grid button:nth-child(5) {
+  grid-column: 2;
+}
+
+.control-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.control-hint {
+  margin-top: 6px;
+  font-size: 0.7rem;
+  color: #98b2c7;
+}
+
+.control-debug {
+  margin-top: 8px;
+  border-top: 1px solid #2a3f53;
+  padding-top: 6px;
+  font-size: 0.68rem;
+  color: #a9c2d7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.control-debug div {
+  margin: 2px 0;
+}
+
 .fps-header {
   font-size: 0.78rem;
   color: #cae9ff;

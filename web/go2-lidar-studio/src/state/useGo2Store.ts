@@ -8,6 +8,10 @@ export type UiSettings = {
   wsUrl: string;
   webrtcVideoEnabled: boolean;
   webrtcVideoUrl: string;
+  controlEnabled: boolean;
+  controlWsUrl: string;
+  controlSpeedVx: number;
+  controlSpeedVyaw: number;
   pointSize: number;
   maxPoints: number;
   historyRetentionSec: number;
@@ -40,6 +44,10 @@ const DEFAULT_SETTINGS: UiSettings = {
   wsUrl: "",
   webrtcVideoEnabled: false,
   webrtcVideoUrl: "",
+  controlEnabled: false,
+  controlWsUrl: "",
+  controlSpeedVx: 0.25,
+  controlSpeedVyaw: 0.7,
   pointSize: 0.08,
   maxPoints: 25000,
   historyRetentionSec: 2.5,
@@ -66,6 +74,9 @@ function loadSettings(): UiSettings {
         ...DEFAULT_SETTINGS,
         wsUrl: Go2BridgeClient.defaultUrl(),
         webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
+        controlWsUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${
+          window.location.hostname
+        }:8766`,
       };
     }
     const parsed = JSON.parse(raw) as Partial<UiSettings>;
@@ -73,6 +84,9 @@ function loadSettings(): UiSettings {
       ...DEFAULT_SETTINGS,
       wsUrl: Go2BridgeClient.defaultUrl(),
       webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
+      controlWsUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${
+        window.location.hostname
+      }:8766`,
       ...parsed,
     };
   } catch {
@@ -80,6 +94,9 @@ function loadSettings(): UiSettings {
       ...DEFAULT_SETTINGS,
       wsUrl: Go2BridgeClient.defaultUrl(),
       webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
+      controlWsUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${
+        window.location.hostname
+      }:8766`,
     };
   }
 }

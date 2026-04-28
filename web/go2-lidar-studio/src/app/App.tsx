@@ -3,6 +3,7 @@ import { SceneCanvas } from "../three/SceneCanvas";
 import { useGo2Store } from "../state/useGo2Store";
 import { ControlsPanel } from "../ui/panels/ControlsPanel";
 import { Go2WebRtcVideo } from "../video/Go2WebRtcVideo";
+import { Go2ControlOverlay } from "../control/Go2ControlOverlay";
 
 export function App() {
   const { state, actions } = useGo2Store();
@@ -47,6 +48,12 @@ export function App() {
         <Go2WebRtcVideo
           enabled={state.settings.webrtcVideoEnabled}
           baseUrl={state.settings.webrtcVideoUrl}
+        />
+        <Go2ControlOverlay
+          enabled={state.settings.controlEnabled}
+          wsUrl={state.settings.controlWsUrl}
+          speedVx={state.settings.controlSpeedVx}
+          speedVyaw={state.settings.controlSpeedVyaw}
         />
         <div className="fps-debug-overlay">
           <div className="fps-header">WS frames/s: {currentFps}</div>

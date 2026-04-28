@@ -65,6 +65,44 @@ export function ControlsPanel({
             placeholder="http://127.0.0.1:8081"
           />
         </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={settings.controlEnabled}
+            onChange={(e) => onSettingsChange({ controlEnabled: e.target.checked })}
+          />
+          Enable robot control feature
+        </label>
+        <label>
+          Control WS URL
+          <input
+            value={settings.controlWsUrl}
+            onChange={(e) => onSettingsChange({ controlWsUrl: e.target.value })}
+            placeholder="ws://127.0.0.1:8766"
+          />
+        </label>
+        <label>
+          Linear speed ({settings.controlSpeedVx.toFixed(2)} m/s)
+          <input
+            type="range"
+            min={0.05}
+            max={0.6}
+            step={0.01}
+            value={settings.controlSpeedVx}
+            onChange={(e) => onSettingsChange({ controlSpeedVx: Number(e.target.value) })}
+          />
+        </label>
+        <label>
+          Yaw speed ({settings.controlSpeedVyaw.toFixed(2)} rad/s)
+          <input
+            type="range"
+            min={0.1}
+            max={1.5}
+            step={0.05}
+            value={settings.controlSpeedVyaw}
+            onChange={(e) => onSettingsChange({ controlSpeedVyaw: Number(e.target.value) })}
+          />
+        </label>
       </section>
 
       <section>

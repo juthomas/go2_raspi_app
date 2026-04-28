@@ -12,10 +12,12 @@ function cleanBaseUrl(raw: string): string {
 export function Go2WebRtcVideo({ enabled, baseUrl }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [status, setStatus] = useState("OFF");
+  const [fps, setFps] = useState(0);
 
   useEffect(() => {
     if (!enabled) {
       setStatus("OFF");
+      setFps(0);
       if (videoRef.current) videoRef.current.srcObject = null;
       return;
     }
@@ -54,6 +56,7 @@ export function Go2WebRtcVideo({ enabled, baseUrl }: Props) {
         setStatus("LIVE");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        setFps(0);
         setStatus(`Error: ${msg}`);
       }
     })();
@@ -70,9 +73,62 @@ export function Go2WebRtcVideo({ enabled, baseUrl }: Props) {
     };
   }, [enabled, baseUrl]);
 
+  useEffect(() => {
+    if (!enabled || !videoRef.current) {
+      setFps(0);
+      return;
+    }
+    const video = videoRef.current;
+    const anyVideo = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number, meta: { presentedFrames: number }) => void) => number;
+      cancelVideoFrameCallback?: (id: number) => void;
+    };
+
+    let rafId: number | null = null;
+    let timerId: number | null = null;
+    let lastFrames = 0;
+    let lastTs = performance.now();
+
+    if (typeof anyVideo.requestVideoFrameCallback === "function") {
+      const step = (now: number, meta: { presentedFrames: number }) => {
+        const dt = now - lastTs;
+        if (dt >= 1000) {
+          const df = meta.presentedFrames - lastFrames;
+          setFps(Math.max(0, Math.round((df * 1000) / dt)));
+          lastFrames = meta.presentedFrames;
+          lastTs = now;
+        }
+        if (anyVideo.requestVideoFrameCallback) {
+          rafId = anyVideo.requestVideoFrameCallback(step);
+        }
+      };
+      rafId = anyVideo.requestVideoFrameCallback(step);
+    } else {
+      let lastTime = video.currentTime;
+      timerId = window.setInterval(() => {
+        const nowTime = video.currentTime;
+        const dt = nowTime - lastTime;
+        // Approximate fallback if requestVideoFrameCallback isn't supported.
+        const approx = dt > 0 ? Math.round(1 / dt) : 0;
+        setFps(Math.max(0, Math.min(120, approx)));
+        lastTime = nowTime;
+      }, 1000);
+    }
+
+    return () => {
+      if (rafId !== null && anyVideo.cancelVideoFrameCallback) {
+        anyVideo.cancelVideoFrameCallback(rafId);
+      }
+      if (timerId !== null) window.clearInterval(timerId);
+      setFps(0);
+    };
+  }, [enabled, status]);
+
   return (
     <div className={`webrtc-video-overlay ${enabled ? "" : "hidden"}`}>
-      <div className="webrtc-video-status">{status}</div>
+      <div className="webrtc-video-status">
+        {status} {enabled ? `| ${fps} fps` : ""}
+      </div>
       <video ref={videoRef} autoPlay playsInline muted />
     </div>
   );

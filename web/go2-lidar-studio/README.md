@@ -15,6 +15,7 @@ Standalone web app (Vite + React + TypeScript + Three.js) to visualize:
 - Robot trail and optional camera follow mode
 - Scene toggles (grid, axes)
 - Optional WebRTC video overlay from `go2_video_webrtc_bridge.py`
+- Optional robot control overlay (keyboard arrows + on-screen buttons) via `go2_control_ws_bridge.py`
 - UI preference persistence through `localStorage`
 
 ## Project structure
@@ -69,6 +70,19 @@ Then in GO2 LiDAR Studio:
 - enable `Enable WebRTC video overlay`
 - set `WebRTC bridge URL` to `http://<ip-du-pi>:8081`
 
+## Optional robot control bridge (WebSocket)
+
+Run the control bridge:
+
+```bash
+python3 scripts/go2_control_ws_bridge.py --iface eth0 --port 8766
+```
+
+Then in GO2 LiDAR Studio:
+- enable `Enable robot control feature`
+- set `Control WS URL` to `ws://<ip-du-pi>:8766`
+- use keyboard arrows or on-screen directional buttons
+
 ## Data contract expected
 
 Point cloud messages:
@@ -78,3 +92,17 @@ Point cloud messages:
   - `position`, `rpy`, `battery_soc`, `power_v`, `power_a`, `joint_q`, etc.
 
 No breaking changes are required on existing LiDAR fields.
+
+
+
+```shell
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --include-joints
+```
+
+```shell
+python3 scripts/go2_video_webrtc_bridge.py --iface eth0 --port 8081 --fps 15
+```
+
+```shell
+python3 scripts/go2_control_ws_bridge.py --iface eth0 --host 0.0.0.0 --port 8766
+```
