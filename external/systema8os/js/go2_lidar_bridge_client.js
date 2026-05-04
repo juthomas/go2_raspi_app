@@ -74,6 +74,13 @@ export function disconnectGo2Lidar() {
   window.dispatchEvent(new CustomEvent("go2-pointcloud", { detail: null }));
 }
 
+export function sendGo2Cmd(msg) {
+  // Strict separation: LiDAR bridge is read-only.
+  // Movement commands must go through go2_control_client.js / go2_control_ws_bridge.py.
+  void msg;
+  return false;
+}
+
 function init() {
   const urlInput = document.getElementById("go2-ws-url");
   const btnOn = document.getElementById("btn-go2-lidar-connect");
@@ -96,7 +103,7 @@ function init() {
       disconnectGo2Lidar();
     });
   }
-  window.__go2LidarBridge = { connect: connectGo2Lidar, disconnect: disconnectGo2Lidar };
+  window.__go2LidarBridge = { connect: connectGo2Lidar, disconnect: disconnectGo2Lidar, sendCmd: sendGo2Cmd };
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

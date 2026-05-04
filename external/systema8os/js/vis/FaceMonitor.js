@@ -2,7 +2,6 @@ export class FaceMonitor {
     constructor() {
         this.container = document.createElement('div');
         this.container.id = 'face-monitor';
-        this.container.className = 'hidden';
         document.body.appendChild(this.container);
 
         this.buildUI();
@@ -16,6 +15,7 @@ export class FaceMonitor {
         const startX = Math.max(20, window.innerWidth - 300);
         this.container.style.left = `${startX}px`;
         
+        this.container.style.display = 'none';
         this.container.style.width = '265px';
         this.container.style.height = '350px';
         this.container.style.minWidth = '160px';
@@ -55,6 +55,20 @@ export class FaceMonitor {
         closeBtn.onclick = () => this.toggle(false);
         this.header.appendChild(closeBtn);
 
+        const minBtn = document.createElement('div');
+        minBtn.innerText = '—';
+        minBtn.title = 'Réduire';
+        minBtn.style.cursor = 'pointer';
+        minBtn.style.fontWeight = 'bold';
+        minBtn.style.fontSize = '14px';
+        minBtn.style.padding = '4px 8px';
+        minBtn.style.background = '#333';
+        minBtn.style.borderRadius = '3px';
+        minBtn.style.marginRight = '4px';
+        minBtn.onclick = () => this._toggleMinimize();
+        this.header.insertBefore(minBtn, closeBtn);
+        this._minBtn = minBtn;
+
         this.content = document.createElement('div');
         this.content.style.flex = '1';
         this.content.style.overflowY = 'auto';
@@ -66,6 +80,10 @@ export class FaceMonitor {
 
         this.container.appendChild(this.header);
         this.container.appendChild(this.content);
+    }
+
+    _toggleMinimize() {
+        this.toggle(false);
     }
 
     setupDrag() {
@@ -105,8 +123,7 @@ export class FaceMonitor {
     }
 
     toggle(active) {
-        if (active) this.container.classList.remove('hidden');
-        else this.container.classList.add('hidden');
+        this.container.style.display = active ? 'flex' : 'none';
     }
 
     addFace(bitmap) {

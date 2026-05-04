@@ -542,6 +542,172 @@ body.view-2d .scatter-controls-2d .slide-container {
     flex: 1;
 }
 
+/* ── GO2 Explorer Panel ─────────────────────────────── */
+.go2-explorer-panel {
+    margin-top: 6px;
+    padding: 6px 6px 8px;
+    border-top: 1px solid #222;
+}
+
+.go2-explorer-title {
+    font-size: 9px;
+    color: #ffdd00;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+    font-family: 'Courier New', monospace;
+}
+
+.go2-sub-title {
+    font-size: 8px;
+    color: #888;
+    letter-spacing: 1px;
+    margin: 8px 0 4px;
+    border-top: 1px solid #1a1a1a;
+    padding-top: 6px;
+    font-family: 'Courier New', monospace;
+}
+
+.go2-explorer-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+}
+
+.go2-ctrl-input {
+    flex: 1;
+    min-width: 0;
+    background: #0a0a0a;
+    border: 1px solid #333;
+    color: #ccc;
+    font-size: 9px;
+    font-family: 'Courier New', monospace;
+    padding: 3px 5px;
+    border-radius: 3px;
+}
+
+.go2-status-line {
+    font-size: 8px;
+    color: #888;
+    font-family: 'Courier New', monospace;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.go2-small-btn {
+    font-size: 8px;
+    padding: 3px 6px;
+    background: #111;
+    border: 1px solid #444;
+    color: #aaa;
+    cursor: pointer;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+    white-space: nowrap;
+}
+
+.go2-small-btn:hover { background: #1a1a1a; }
+.go2-small-btn.active { background: #222; }
+
+.go2-btn-green  { border-color: #44ff88; color: #44ff88; }
+.go2-btn-yellow { border-color: #ffdd00; color: #ffdd00; }
+.go2-btn-rec    { border-color: #ff4444; color: #ff4444; background: #1a0000; }
+.go2-btn-play   { border-color: #44ff88; color: #44ff88; background: #001a0a; }
+.go2-btn-rec.active  { background: #3a0000; }
+.go2-btn-play:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* D-Pad + postures layout */
+.go2-ctrl-body {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: 6px 0;
+}
+
+.go2-dpad {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+}
+
+.go2-dpad-row {
+    display: flex;
+    gap: 3px;
+}
+
+.go2-dpad-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 14px;
+    background: #111;
+    border: 1px solid #444;
+    color: #ccc;
+    cursor: pointer;
+    border-radius: 4px;
+    touch-action: none;
+    user-select: none;
+    font-family: 'Courier New', monospace;
+}
+
+.go2-dpad-btn:active { background: #2a2a00; border-color: #ffdd00; color: #ffdd00; }
+
+.go2-dpad-btn.go2-stop { background: #1a0000; border-color: #ff4444; color: #ff4444; }
+.go2-dpad-btn.go2-stop:active { background: #330000; }
+
+.go2-postures {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+}
+
+/* Speed sliders */
+.go2-speed-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 3px;
+}
+
+.go2-speed-row label {
+    font-size: 8px;
+    color: #888;
+    font-family: 'Courier New', monospace;
+    width: 72px;
+    flex-shrink: 0;
+}
+
+.go2-speed-row input[type=range] {
+    flex: 1;
+    min-width: 0;
+}
+
+.go2-seq-info {
+    font-size: 8px;
+    color: #555;
+    font-family: 'Courier New', monospace;
+    flex: 1;
+}
+
+.go2-mini-label {
+    font-size: 8px;
+    color: #666;
+    font-family: 'Courier New', monospace;
+    white-space: nowrap;
+}
+
+.go2-hint {
+    font-size: 7px;
+    color: #333;
+    margin-top: 5px;
+    font-family: 'Courier New', monospace;
+}
+
 /* Mode 5: Only 3D */
 body.view-3d .controls-overlay,
 body.view-3d #scatter-container,

@@ -13,6 +13,8 @@ import { WebcamMonitor } from './vis/WebcamMonitor.js';
 import { FaceMonitor } from './vis/FaceMonitor.js';
 import { Go2LidarLayer } from './vis/Go2LidarLayer.js';
 import { LidarSoundMapper } from './logic/LidarSoundMapper.js';
+import { Go2RobotScatter } from './logic/Go2RobotScatter.js';
+import { Go2ControlClient } from './go2_control_client.js';
 
 class App {
     constructor() {
@@ -88,6 +90,32 @@ class App {
                 if (pos) this.sceneMgr.focusOn(pos);
                 else this.sceneMgr.stopFocus();
             }
+        });
+
+        this.robotScatter = new Go2RobotScatter({
+            onSendCmd: (msg) => {
+                if (this.go2ctrl?.connected && this.go2ctrl?.pilot) {
+                    if (msg?.type === "go2_move") {
+                        this.go2ctrl.setTarget(
+                            Number(msg.vx ?? 0),
+                            Number(msg.vy ?? 0),
+                            Number(msg.vyaw ?? 0),
+                        );
+                        return;
+                    }
+                    if (msg?.type === "go2_stop") {
+                        this.go2ctrl.stop();
+                        return;
+                    }
+                }
+                // Strict separation: movement is only accepted on control WS bridge.
+                if (msg?.type === "go2_move" || msg?.type === "go2_stop") {
+                    if (this.ui?.status) {
+                        this.ui.status.innerText = "GO2 control unavailable (connect Control WS + claim pilot)";
+                    }
+                }
+            },
+            scale: 0.1,
         });
 
         this.ui = new UI(this.audio, this.store, {
@@ -214,6 +242,18 @@ class App {
             if (this.go2Lidar) this.go2Lidar.updateFromPayload(e.detail);
             this.lidarSoundMapper.updateFromPayload(e.detail);
             this.lidarSoundMapper.setEnabled(true);
+
+            // Mise à jour position robot dans l'explorateur Timbre/Pitch
+            if (e.detail.robot_state) {
+                this.robotScatter.update(e.detail.robot_state);
+                if (this.robotScatter.scatterPos) {
+                    this.scatterPad.setRobotCursor(
+                        this.robotScatter.scatterPos.nx,
+                        this.robotScatter.scatterPos.ny,
+                        this.robotScatter.worldYaw,
+                    );
+                }
+            }
         });
 
         // Enable Face Mode by default
@@ -254,9 +294,149 @@ class App {
         });
 
         this.setupGo2LidarUi();
+        this.setupRobotScatterUi();
+        this.setupGo2ControlUi();
 
         this.animate = this.animate.bind(this);
         requestAnimationFrame(this.animate);
+    }
+
+    setupGo2ControlUi() {
+        const $ = (id) => document.getElementById(id);
+
+        const ctrlStatus = $('go2-ctrl-status');
+        const seqInfo    = $('go2-seq-info');
+        const btnPlay    = $('go2-btn-play');
+        const btnRec     = $('go2-btn-rec');
+        const btnKb      = $('go2-btn-ctrl-kb');
+
+        const getVx   = () => parseFloat($('go2-ctrl-vx')?.value   ?? 25) / 100;
+        const getVyaw = () => parseFloat($('go2-ctrl-vyaw')?.value ?? 70) / 100;
+
+        const setCtrlStatus = (text, ok) => {
+            if (!ctrlStatus) return;
+            ctrlStatus.textContent = text;
+            ctrlStatus.style.color = ok === true ? '#3fb950' : ok === false ? '#f85149' : '#888';
+        };
+
+        const updateSeqInfo = (seq) => {
+            if (!seqInfo || !btnPlay) return;
+            const len = seq?.length ?? 0;
+            const ms  = seq ? seq.reduce((s, e) => s + e.dt, 0) : 0;
+            if (this.go2ctrl.isPlaying) {
+                seqInfo.textContent = '▶ lecture…';
+                seqInfo.style.color = '#44ff88';
+                btnPlay.textContent = '■ STOP';
+                btnPlay.style.color = '#ffaa44';
+                btnPlay.disabled    = false;
+            } else if (this.go2ctrl.isRecording) {
+                seqInfo.textContent = `● ${len} frames`;
+                seqInfo.style.color = '#ff4444';
+            } else {
+                seqInfo.textContent = len ? `${len} frames · ${(ms / 1000).toFixed(1)}s` : 'pas de séquence';
+                seqInfo.style.color = '#555';
+                btnPlay.textContent = '▶ PLAY';
+                btnPlay.style.color = '#44ff88';
+                btnPlay.disabled    = len === 0;
+            }
+        };
+
+        this.go2ctrl = new Go2ControlClient({
+            onStatus:    setCtrlStatus,
+            onPilot:     (ok) => setCtrlStatus(ok ? 'Pilot accordé ✓' : 'Pilot refusé', ok),
+            onSeqUpdate: updateSeqInfo,
+        });
+
+        // URL par défaut
+        const urlInput = $('go2-ctrl-url');
+        if (urlInput) {
+            const defaultUrl = (() => {
+                const p = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const h = location.hostname;
+                return (h === 'localhost' || h === '127.0.0.1') ? `${p}//127.0.0.1:8766` : `${p}//${h}:8766`;
+            })();
+            try { urlInput.value = localStorage.getItem('go2_ctrl_url') || defaultUrl; } catch (_) { urlInput.value = defaultUrl; }
+        }
+
+        // Connexion
+        $('btn-go2-ctrl-on')?.addEventListener('click', () => {
+            const url = urlInput?.value?.trim();
+            if (!url) { setCtrlStatus('URL vide', false); return; }
+            try { localStorage.setItem('go2_ctrl_url', url); } catch (_) {}
+            this.go2ctrl.connect(url);
+        });
+        $('btn-go2-ctrl-off')?.addEventListener('click', () => this.go2ctrl.disconnect());
+
+        // Clavier flèches toggle
+        $('btn-go2-ctrl-kb')?.addEventListener('click', () => {
+            const active = !this.go2ctrl._kbActive;
+            this.go2ctrl.toggleKeyboard(active, getVx(), getVyaw());
+            if ($('btn-go2-ctrl-kb')) {
+                $('btn-go2-ctrl-kb').textContent = `KB: ${active ? 'ON' : 'OFF'}`;
+                $('btn-go2-ctrl-kb').classList.toggle('active', active);
+            }
+        });
+
+        // Sliders vitesse
+        const updateSpeeds = () => this.go2ctrl._speedVx = getVx(), this.go2ctrl._speedVyaw = getVyaw();
+        $('go2-ctrl-vx')?.addEventListener('input', (e) => {
+            const v = parseFloat(e.target.value) / 100;
+            if ($('go2-ctrl-vx-val')) $('go2-ctrl-vx-val').textContent = v.toFixed(2);
+            this.go2ctrl._speedVx = v;
+        });
+        $('go2-ctrl-vyaw')?.addEventListener('input', (e) => {
+            const v = parseFloat(e.target.value) / 100;
+            if ($('go2-ctrl-vyaw-val')) $('go2-ctrl-vyaw-val').textContent = v.toFixed(2);
+            this.go2ctrl._speedVyaw = v;
+        });
+
+        // D-Pad (pointerdown/up pour touch + souris)
+        const dpad = (btnId, vx, vy, vyaw) => {
+            const btn = $(btnId);
+            if (!btn) return;
+            btn.addEventListener('pointerdown', () => this.go2ctrl.setTarget(vx * getVx(), vy, vyaw * getVyaw()));
+            btn.addEventListener('pointerup',   () => this.go2ctrl.setTarget(0, 0, 0));
+            btn.addEventListener('pointerleave',() => this.go2ctrl.setTarget(0, 0, 0));
+            btn.addEventListener('pointercancel',()=> this.go2ctrl.setTarget(0, 0, 0));
+        };
+        dpad('go2-btn-fwd',   1,  0,  0);
+        dpad('go2-btn-back', -1,  0,  0);
+        dpad('go2-btn-left',  0,  0,  1);
+        dpad('go2-btn-right', 0,  0, -1);
+        $('go2-btn-stop')?.addEventListener('click', () => this.go2ctrl.stop());
+
+        // Postures
+        const cmd = (btnId, type) => $(btnId)?.addEventListener('click', () => this.go2ctrl.send({ type }));
+        cmd('go2-btn-standup',   'stand_up');
+        cmd('go2-btn-standdown', 'stand_down');
+        cmd('go2-btn-balance',   'balance_stand');
+        cmd('go2-btn-recovery',  'recovery_stand');
+        cmd('go2-btn-normal',    'normal_mode');
+
+        // REC
+        btnRec?.addEventListener('click', () => {
+            if (this.go2ctrl.isRecording) {
+                this.go2ctrl.stopRec();
+                if (btnRec) { btnRec.textContent = '● REC'; btnRec.classList.remove('active'); }
+                if (this.ui?.status) this.ui.status.innerText = `GO2 REC STOP — ${this.go2ctrl.sequenceLength} frames`;
+            } else {
+                this.go2ctrl.startRec();
+                if (btnRec) { btnRec.textContent = '■ STOP REC'; btnRec.classList.add('active'); }
+                if (this.ui?.status) this.ui.status.innerText = 'GO2 REC…';
+            }
+        });
+
+        // PLAY
+        btnPlay?.addEventListener('click', () => {
+            if (this.go2ctrl.isPlaying) {
+                this.go2ctrl.stopPlay();
+                if (this.ui?.status) this.ui.status.innerText = 'GO2 PLAY ARRÊTÉ';
+            } else {
+                if (this.go2ctrl.startPlay()) {
+                    if (this.ui?.status) this.ui.status.innerText = 'GO2 PLAY — robot rejoue la séquence';
+                }
+            }
+        });
     }
 
     setupGo2LidarUi() {
@@ -302,6 +482,109 @@ class App {
         slider.addEventListener('input', applyRetention);
         colorCur.addEventListener('input', applyColors);
         colorHist.addEventListener('input', applyColors);
+    }
+
+    setupRobotScatterUi() {
+        const $ = (id) => document.getElementById(id);
+
+        // Calibrer : position actuelle du robot → centre de l'explorateur
+        const btnCal = $('btn-go2-scatter-cal');
+        if (btnCal) {
+            btnCal.addEventListener('click', () => {
+                const origin = this.robotScatter.calibrate();
+                if (origin) {
+                    this.scatterPad.setRobotActive(true);
+                    this.ui.status.innerText = `GO2 CALIBRÉ (${origin.x.toFixed(2)}, ${origin.y.toFixed(2)})`;
+                    btnCal.classList.add('active');
+                } else {
+                    this.ui.status.innerText = 'CALIBRATION: AUCUNE POSITION ROBOT — connecte le pont LiDAR';
+                }
+            });
+        }
+
+        // REC : enregistrer la trajectoire
+        const btnRec = $('btn-go2-scatter-rec');
+        if (btnRec) {
+            btnRec.addEventListener('click', () => {
+                if (this.robotScatter.isRecording) {
+                    const path = this.robotScatter.stopRec();
+                    this.scatterPad.setRecordedPath(path);
+                    this.scatterPad.setRobotRecording(false);
+                    this.ui.status.innerText = `GO2 REC STOP — ${path.length} pts enregistrés`;
+                    btnRec.classList.remove('active');
+                } else {
+                    if (!this.robotScatter.calibOrigin) {
+                        this.ui.status.innerText = 'REC: calibre d\'abord (bouton CAL)';
+                        return;
+                    }
+                    this.robotScatter.startRec();
+                    this.scatterPad.setRobotRecording(true);
+                    this.scatterPad.setRecordedPath([]);
+                    this.scatterPad.setPlaybackIdx(-1);
+                    this.ui.status.innerText = 'GO2 REC...';
+                    btnRec.classList.add('active');
+                }
+            });
+        }
+
+        // PLAY : rejouer physiquement la trajectoire enregistrée
+        const btnPlay = $('btn-go2-scatter-play');
+        if (btnPlay) {
+            btnPlay.addEventListener('click', () => {
+                if (this.robotScatter.isPlaying) {
+                    this.robotScatter.stopPlayback();
+                    this.scatterPad.setPlaybackIdx(-1);
+                    btnPlay.classList.remove('active');
+                    this.ui.status.innerText = 'GO2 PLAY ARRÊTÉ';
+                } else {
+                    if (this.robotScatter.startPlayback()) {
+                        this.scatterPad.setPlaybackIdx(0);
+                        btnPlay.classList.add('active');
+                        this.ui.status.innerText = 'GO2 PLAY — robot retourne sur la trajectoire';
+                    } else {
+                        this.ui.status.innerText = 'GO2 PLAY: enregistre une trajectoire d\'abord (REC)';
+                    }
+                }
+            });
+        }
+
+        // Slider échelle (m/unité scatter)
+        const sliderScale = $('go2-scatter-scale');
+        const labelScale  = $('go2-scatter-scale-val');
+        if (sliderScale) {
+            const apply = () => {
+                const v = parseFloat(sliderScale.value);
+                this.robotScatter.setScale(v);
+                if (labelScale) labelScale.textContent = `${v.toFixed(2)} u/m`;
+            };
+            sliderScale.addEventListener('input', apply);
+            apply();
+        }
+
+        // Slider rayon du reader robot
+        const sliderRadius = $('go2-scatter-radius');
+        const labelRadius  = $('go2-scatter-radius-val');
+        if (sliderRadius) {
+            const applyRadius = () => {
+                // slider 1..100 → rayon 0.005..0.5
+                const v = parseInt(sliderRadius.value) / 200;
+                this.scatterPad.setRobotRadius(v);
+                if (labelRadius) labelRadius.textContent = v.toFixed(3);
+            };
+            sliderRadius.addEventListener('input', applyRadius);
+            applyRadius();
+        }
+
+        // Toggle son autour du robot
+        const btnSound = $('btn-go2-scatter-sound');
+        if (btnSound) {
+            btnSound.addEventListener('click', () => {
+                const next = !this.scatterPad.robotActive;
+                this.scatterPad.setRobotActive(next);
+                btnSound.classList.toggle('active', next);
+                this.ui.status.innerText = next ? 'GO2 SON ACTIF' : 'GO2 SON OFF';
+            });
+        }
     }
 
     setupVideoManager(mgr) {
@@ -706,6 +989,16 @@ class App {
     animate() {
         requestAnimationFrame(this.animate);
         this.processAnalysis();
+
+        // Tick playback robot GO2
+        if (this.robotScatter.isPlaying) {
+            const idx = this.robotScatter.tick();
+            this.scatterPad.setPlaybackIdx(idx);
+            if (idx < 0) {
+                const btnPlay = document.getElementById('btn-go2-scatter-play');
+                if (btnPlay) btnPlay.classList.remove('active');
+            }
+        }
 
         // Pass camera position for billboards
         // Optimized: Dynamic throttling based on perf mode

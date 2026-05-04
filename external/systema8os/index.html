@@ -328,6 +328,81 @@
                 <span>X: TIMBRE</span>
                 <span>Y: PITCH</span>
             </div>
+
+            <!-- ── GO2 ROBOT CONTROL ── -->
+            <div class="go2-explorer-panel">
+                <div class="go2-explorer-title">▸ GO2 ROBOT CONTROL</div>
+
+                <!-- Connexion -->
+                <div class="go2-explorer-row">
+                    <input type="text" id="go2-ctrl-url" class="go2-ctrl-input" placeholder="ws://IP:8766" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="go2-explorer-row">
+                    <button id="btn-go2-ctrl-on"  class="go2-small-btn go2-btn-green" type="button">ON</button>
+                    <button id="btn-go2-ctrl-off" class="go2-small-btn" type="button">OFF</button>
+                    <button id="btn-go2-ctrl-kb"  class="go2-small-btn go2-btn-yellow" type="button">KB: OFF</button>
+                    <div id="go2-ctrl-status" class="go2-status-line">OFF</div>
+                </div>
+
+                <!-- D-Pad + Postures côte à côte -->
+                <div class="go2-ctrl-body">
+                    <div class="go2-dpad">
+                        <div class="go2-dpad-row">
+                            <button id="go2-btn-fwd"  class="go2-dpad-btn" type="button">▲</button>
+                        </div>
+                        <div class="go2-dpad-row">
+                            <button id="go2-btn-left" class="go2-dpad-btn" type="button">◄</button>
+                            <button id="go2-btn-stop" class="go2-dpad-btn go2-stop" type="button">■</button>
+                            <button id="go2-btn-right" class="go2-dpad-btn" type="button">►</button>
+                        </div>
+                        <div class="go2-dpad-row">
+                            <button id="go2-btn-back" class="go2-dpad-btn" type="button">▼</button>
+                        </div>
+                    </div>
+                    <div class="go2-postures">
+                        <button id="go2-btn-standup"   class="go2-small-btn" type="button">STAND UP</button>
+                        <button id="go2-btn-standdown" class="go2-small-btn" type="button">STAND DOWN</button>
+                        <button id="go2-btn-balance"   class="go2-small-btn" type="button">BALANCE</button>
+                        <button id="go2-btn-recovery"  class="go2-small-btn" type="button">RECOVERY</button>
+                        <button id="go2-btn-normal"    class="go2-small-btn" type="button">NORMAL MODE</button>
+                    </div>
+                </div>
+
+                <!-- Vitesses -->
+                <div class="go2-speed-row">
+                    <label>VX <span id="go2-ctrl-vx-val">0.25</span>m/s</label>
+                    <input type="range" id="go2-ctrl-vx" min="5" max="60" value="25">
+                </div>
+                <div class="go2-speed-row">
+                    <label>YAW <span id="go2-ctrl-vyaw-val">0.70</span>r/s</label>
+                    <input type="range" id="go2-ctrl-vyaw" min="10" max="150" value="70">
+                </div>
+
+                <!-- REC / PLAY commandes -->
+                <div class="go2-explorer-row" style="margin-top:6px;">
+                    <button id="go2-btn-rec"  class="go2-small-btn go2-btn-rec"  type="button">● REC</button>
+                    <button id="go2-btn-play" class="go2-small-btn go2-btn-play" type="button" disabled>▶ PLAY</button>
+                    <span id="go2-seq-info" class="go2-seq-info">—</span>
+                </div>
+
+                <!-- Séparateur position GPS -->
+                <div class="go2-sub-title">▸ POSITION TRACKER</div>
+                <div class="go2-explorer-row">
+                    <button id="btn-go2-scatter-cal"   class="go2-small-btn go2-btn-yellow" type="button">CAL</button>
+                    <button id="btn-go2-scatter-sound" class="go2-small-btn go2-btn-green"  type="button">SON</button>
+                    <button id="btn-go2-scatter-rec"   class="go2-small-btn go2-btn-rec"    type="button">REC GPS</button>
+                    <button id="btn-go2-scatter-play"  class="go2-small-btn go2-btn-play"   type="button">PLAY GPS</button>
+                </div>
+                <div class="go2-explorer-row">
+                    <label class="go2-mini-label">ÉCHELLE</label>
+                    <input type="range" id="go2-scatter-scale" min="0.02" max="0.5" step="0.01" value="0.1" style="width:60px;">
+                    <span id="go2-scatter-scale-val" class="go2-mini-label">0.10 u/m</span>
+                    <label class="go2-mini-label">RAYON</label>
+                    <input type="range" id="go2-scatter-radius" min="1" max="100" step="1" value="10" style="width:60px;">
+                    <span id="go2-scatter-radius-val" class="go2-mini-label">0.05</span>
+                </div>
+                <div class="go2-hint">FLÈCHES = piloter · SPACE/X = stop · REC GPS = trajectoire par position</div>
+            </div>
         </div>
 
         <div id="midi-terminal" class="terminal-window hidden">

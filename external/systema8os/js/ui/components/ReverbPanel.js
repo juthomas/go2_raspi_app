@@ -3,7 +3,6 @@ export class ReverbPanel {
         this.callbacks = callbacks;
         this.container = document.createElement('div');
         this.container.id = 'reverb-panel';
-        this.container.className = 'hidden';
         document.body.appendChild(this.container);
 
         this.buildUI();
@@ -19,7 +18,7 @@ export class ReverbPanel {
         this.container.style.background = 'rgba(0, 0, 0, 0.9)';
         this.container.style.border = '1px solid #444';
         this.container.style.zIndex = '210';
-        this.container.style.display = 'flex';
+        this.container.style.display = 'none';
         this.container.style.flexDirection = 'column';
         this.container.style.boxShadow = '0 0 15px rgba(0,0,0,0.5)';
         this.container.style.resize = 'both';
@@ -35,6 +34,18 @@ export class ReverbPanel {
         const title = document.createElement('span');
         title.innerText = 'REVERB (FX)';
         this.header.appendChild(title);
+
+        const minBtn = document.createElement('div');
+        minBtn.innerText = '—';
+        minBtn.title = 'Réduire';
+        minBtn.style.cursor = 'pointer';
+        minBtn.style.background = '#333';
+        minBtn.style.padding = '2px 8px';
+        minBtn.style.borderRadius = '3px';
+        minBtn.style.marginRight = '4px';
+        minBtn.onclick = () => this._toggleMinimize();
+        this.header.appendChild(minBtn);
+        this._minBtn = minBtn;
 
         const closeBtn = document.createElement('div');
         closeBtn.innerText = 'X';
@@ -166,12 +177,12 @@ export class ReverbPanel {
         });
     }
 
+    _toggleMinimize() {
+        this.toggle(false);
+    }
+
     toggle(active) {
-        if (active) this.container.classList.remove('hidden');
-        else this.container.classList.add('hidden');
-        
-        if (this.callbacks.onVisibilityChange) {
-            this.callbacks.onVisibilityChange(active);
-        }
+        this.container.style.display = active ? 'flex' : 'none';
+        if (this.callbacks.onVisibilityChange) this.callbacks.onVisibilityChange(active);
     }
 }
