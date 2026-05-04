@@ -10,6 +10,7 @@ type Props = {
   controlStatusText: string;
   controlLatencyMs: number | null;
   webrtcRttMs: number | null;
+  piHttpPingMs: number | null;
   controlBridgeText: string;
   settings: UiSettings;
   robotState: Go2RobotState | null;
@@ -28,6 +29,7 @@ export function ControlsPanel({
   controlStatusText,
   controlLatencyMs,
   webrtcRttMs,
+  piHttpPingMs,
   controlBridgeText,
   settings,
   robotState,
@@ -67,6 +69,9 @@ export function ControlsPanel({
         <p className={`status ${status}`}>{statusText}</p>
         <p className={`status ${status === "connected" ? "connected" : "disconnected"}`}>
           LiDAR WS ping: {wsLatencyMs == null ? "--" : `${wsLatencyMs} ms`}
+        </p>
+        <p className={`status ${piHttpPingMs == null ? "disconnected" : "connected"}`}>
+          Pi network ping: {piHttpPingMs == null ? "--" : `${piHttpPingMs} ms`}
         </p>
         <label className="checkbox">
           <input

@@ -315,7 +315,7 @@ main {
 
 .latency-legend {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 5px;
   font-size: 0.62rem;
@@ -391,6 +391,14 @@ main {
 
 .legend-dot.webrtc {
   background: #dd8c2f;
+}
+
+.latency-bar.network {
+  background: linear-gradient(180deg, #cdb6ff, #7e63d9);
+}
+
+.legend-dot.network {
+  background: #8d73e6;
 }
 
 .robot-stats p {

@@ -24,20 +24,59 @@ function displayLatency(value: number | null): string {
 export function App() {
   const { state, actions } = useGo2Store();
   const [webrtcRttMs, setWebrtcRttMs] = useState<number | null>(null);
+  const [piHttpPingMs, setPiHttpPingMs] = useState<number | null>(null);
   const [fpsBins, setFpsBins] = useState<number[]>(() => emptyBins());
   const [latencyBins, setLatencyBins] = useState<{
     lidarWs: number[];
     controlWs: number[];
     webrtc: number[];
+    network: number[];
   }>(() => ({
     lidarWs: emptyBins(),
     controlWs: emptyBins(),
     webrtc: emptyBins(),
+    network: emptyBins(),
   }));
   const frameCounterRef = useRef(0);
   const wsLatencyRef = useRef<number | null>(null);
   const controlLatencyRef = useRef<number | null>(null);
   const webrtcLatencyRef = useRef<number | null>(null);
+  const networkLatencyRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const probe = async () => {
+      const t0 = performance.now();
+      try {
+        const res = await fetch(`${window.location.origin}/?pi_rtt_probe=${Date.now()}`, {
+          method: "GET",
+          cache: "no-store",
+          credentials: "omit",
+        });
+        if (!cancelled && res.ok) {
+          setPiHttpPingMs(Math.max(0, Math.round(performance.now() - t0)));
+        } else if (!cancelled) {
+          setPiHttpPingMs(null);
+        }
+      } catch {
+        if (!cancelled) setPiHttpPingMs(null);
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(() => {
+            void probe();
+          }, 2000);
+        }
+      }
+    };
+
+    void probe();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!state.lastPayload) return;
@@ -57,6 +96,10 @@ export function App() {
   }, [webrtcRttMs]);
 
   useEffect(() => {
+    networkLatencyRef.current = piHttpPingMs;
+  }, [piHttpPingMs]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       const n = frameCounterRef.current;
       frameCounterRef.current = 0;
@@ -65,6 +108,7 @@ export function App() {
         lidarWs: [...prev.lidarWs.slice(1), clampLatency(wsLatencyRef.current)],
         controlWs: [...prev.controlWs.slice(1), clampLatency(controlLatencyRef.current)],
         webrtc: [...prev.webrtc.slice(1), clampLatency(webrtcLatencyRef.current)],
+        network: [...prev.network.slice(1), clampLatency(networkLatencyRef.current)],
       }));
     }, 1000);
     return () => window.clearInterval(timer);
@@ -75,6 +119,7 @@ export function App() {
   const lidarMax = Math.max(20, ...latencyBins.lidarWs);
   const controlMax = Math.max(20, ...latencyBins.controlWs);
   const webrtcMax = Math.max(20, ...latencyBins.webrtc);
+  const networkMax = Math.max(20, ...latencyBins.network);
 
   return (
     <div className="app-shell">
@@ -89,6 +134,7 @@ export function App() {
           controlStatusText={state.controlStatusText}
           controlLatencyMs={state.controlLatencyMs}
           webrtcRttMs={webrtcRttMs}
+          piHttpPingMs={piHttpPingMs}
           controlBridgeText={state.controlBridgeText}
           settings={state.settings}
           robotState={state.robotState}
@@ -138,6 +184,7 @@ export function App() {
             <span><i className="legend-dot lidar" />LiDAR WS</span>
             <span><i className="legend-dot control" />Control WS</span>
             <span><i className="legend-dot webrtc" />WebRTC</span>
+            <span><i className="legend-dot network" />Pi network</span>
           </div>
           <div className="latency-row-label">
             <span><i className="legend-dot lidar" />LiDAR WS</span>
@@ -178,6 +225,20 @@ export function App() {
                 className="latency-bar webrtc"
                 style={{ height: `${v <= 0 ? 2 : Math.max(6, (v / webrtcMax) * 100)}%` }}
                 title={`WebRTC: ${v} ms`}
+              />
+            ))}
+          </div>
+          <div className="latency-row-label">
+            <span><i className="legend-dot network" />Pi network</span>
+            <span>{displayLatency(piHttpPingMs)}</span>
+          </div>
+          <div className="latency-row">
+            {latencyBins.network.map((v, i) => (
+              <span
+                key={`network-${i}`}
+                className="latency-bar network"
+                style={{ height: `${v <= 0 ? 2 : Math.max(6, (v / networkMax) * 100)}%` }}
+                title={`Pi network: ${v} ms`}
               />
             ))}
           </div>
