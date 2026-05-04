@@ -267,6 +267,17 @@ async def _amain(args: argparse.Namespace) -> None:
                     continue
 
                 typ = data.get("type")
+                if typ == "ping":
+                    await _send_json(
+                        ws,
+                        {
+                            "type": "pong",
+                            "seq": data.get("seq"),
+                            "client_ts_ms": data.get("client_ts_ms"),
+                            "server_ts": time.time(),
+                        },
+                    )
+                    continue
                 if typ == "claim_pilot":
                     async with pilot_lock:
                         current = pilot["ws"]

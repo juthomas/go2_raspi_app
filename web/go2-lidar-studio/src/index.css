@@ -289,6 +289,94 @@ main {
   opacity: 0.95;
 }
 
+.latency-header {
+  margin-top: 8px;
+  margin-bottom: 4px;
+  font-size: 0.68rem;
+  color: #a9c2d7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.latency-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 5px;
+  font-size: 0.62rem;
+  color: #9db6cb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.latency-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.latency-row-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2px;
+  font-size: 0.63rem;
+  color: #b8cde0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.latency-row-label span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.latency-row {
+  height: 30px;
+  display: grid;
+  grid-template-columns: repeat(30, 1fr);
+  align-items: end;
+  gap: 2px;
+  margin-bottom: 3px;
+}
+
+.latency-bar {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  opacity: 0.95;
+}
+
+.latency-bar.lidar {
+  background: linear-gradient(180deg, #9be3ff, #2e90dc);
+}
+
+.legend-dot.lidar {
+  background: #3ea5f4;
+}
+
+.latency-bar.control {
+  background: linear-gradient(180deg, #9effc5, #2fad66);
+}
+
+.legend-dot.control {
+  background: #33bf75;
+}
+
+.latency-bar.webrtc {
+  background: linear-gradient(180deg, #ffd08f, #d1852e);
+}
+
+.legend-dot.webrtc {
+  background: #dd8c2f;
+}
+
 .robot-stats p {
   margin: 3px 0;
   font-size: 0.8rem;

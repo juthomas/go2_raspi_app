@@ -5,8 +5,11 @@ import type { Go2RobotState } from "../../types/go2";
 type Props = {
   status: ConnectionStatus;
   statusText: string;
+  wsLatencyMs: number | null;
   controlStatus: ConnectionStatus;
   controlStatusText: string;
+  controlLatencyMs: number | null;
+  webrtcRttMs: number | null;
   controlBridgeText: string;
   settings: UiSettings;
   robotState: Go2RobotState | null;
@@ -20,8 +23,11 @@ type Props = {
 export function ControlsPanel({
   status,
   statusText,
+  wsLatencyMs,
   controlStatus,
   controlStatusText,
+  controlLatencyMs,
+  webrtcRttMs,
   controlBridgeText,
   settings,
   robotState,
@@ -59,6 +65,9 @@ export function ControlsPanel({
           <button onClick={onDisconnect}>Disconnect</button>
         </div>
         <p className={`status ${status}`}>{statusText}</p>
+        <p className={`status ${status === "connected" ? "connected" : "disconnected"}`}>
+          LiDAR WS ping: {wsLatencyMs == null ? "--" : `${wsLatencyMs} ms`}
+        </p>
         <label className="checkbox">
           <input
             type="checkbox"
@@ -98,6 +107,12 @@ export function ControlsPanel({
           <button onClick={onControlDisconnect}>Disconnect Control WS</button>
         </div>
         <p className={`status ${controlStatus}`}>{controlStatusText}</p>
+        <p className={`status ${controlStatus === "connected" ? "connected" : "disconnected"}`}>
+          Control WS ping: {controlLatencyMs == null ? "--" : `${controlLatencyMs} ms`}
+        </p>
+        <p className={`status ${settings.webrtcVideoEnabled ? "connected" : "disconnected"}`}>
+          WebRTC RTT: {webrtcRttMs == null ? "--" : `${webrtcRttMs} ms`}
+        </p>
         <p className={`status ${controlStatus === "connected" ? "connected" : "disconnected"}`}>{controlBridgeText}</p>
         <label>
           Linear speed ({settings.controlSpeedVx.toFixed(2)} m/s)

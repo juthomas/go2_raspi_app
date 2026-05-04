@@ -291,8 +291,24 @@ async def _amain(args: argparse.Namespace) -> None:
                     }
                 )
             )
-            async for _ in ws:
-                pass
+            async for raw in ws:
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get("type") == "ping":
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "pong",
+                                "seq": data.get("seq"),
+                                "client_ts_ms": data.get("client_ts_ms"),
+                                "server_ts": time.time(),
+                            }
+                        )
+                    )
         except ConnectionClosed as exc:
             # Normal enough on flaky Wi-Fi/mobile clients: avoid noisy traceback.
             print(f"[go2_lidar_ws] client deconnecte ({ra}): code={exc.code} reason={exc.reason!r}")
@@ -300,13 +316,19 @@ async def _amain(args: argparse.Namespace) -> None:
             await unregister(ws)
 
     last_sent_t = 0.0
+    last_broadcast_n = 0
 
     async def broadcast_loop() -> None:
-        nonlocal last_sent_t
+        nonlocal last_sent_t, last_broadcast_n
         while True:
             await asyncio.sleep(args.broadcast_period)
             snap = box[0]
             if snap is None:
+                continue
+            current_n = count["n"]
+            # Do not rebroadcast the exact same LiDAR frame over and over.
+            # Repeating stale payloads creates WS backlog and inflates app-level RTT.
+            if current_n <= last_broadcast_n:
                 continue
             if args.rate_hz > 0:
                 now = time.monotonic()
@@ -324,6 +346,7 @@ async def _amain(args: argparse.Namespace) -> None:
                         dead.append(c)
                 for c in dead:
                     clients.discard(c)
+            last_broadcast_n = current_n
 
     prev_n = 0
 

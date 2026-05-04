@@ -34,8 +34,10 @@ export type UiSettings = {
 type StoreState = {
   status: ConnectionStatus;
   statusText: string;
+  wsLatencyMs: number | null;
   controlStatus: ConnectionStatus;
   controlStatusText: string;
+  controlLatencyMs: number | null;
   controlBridgeText: string;
   controlPilot: boolean;
   controlLastAck: string;
@@ -116,8 +118,10 @@ export function useGo2Store() {
   const [state, setState] = useState<StoreState>(() => ({
     status: "disconnected",
     statusText: "Idle",
+    wsLatencyMs: null,
     controlStatus: "disconnected",
     controlStatusText: "Control WS idle",
+    controlLatencyMs: null,
     controlBridgeText: "Control bridge: --",
     controlPilot: false,
     controlLastAck: "--",
@@ -133,13 +137,14 @@ export function useGo2Store() {
     () =>
       new Go2BridgeClient({
         onOpen: () => {
-          setState((prev) => ({ ...prev, status: "connected", statusText: "WebSocket connected" }));
+          setState((prev) => ({ ...prev, status: "connected", statusText: "WebSocket connected", wsLatencyMs: null }));
         },
         onClose: () => {
           setState((prev) => ({
             ...prev,
             status: "disconnected",
             statusText: "WebSocket closed",
+            wsLatencyMs: null,
           }));
         },
         onError: (message) => {
@@ -158,6 +163,9 @@ export function useGo2Store() {
             lastPayload: msg,
             robotState: msg.robot_state ?? prev.robotState,
           }));
+        },
+        onLatency: (latencyMs) => {
+          setState((prev) => ({ ...prev, wsLatencyMs: latencyMs }));
         },
       }),
     [],
@@ -196,7 +204,7 @@ export function useGo2Store() {
 
   const disconnect = () => {
     client.disconnect();
-    setState((prev) => ({ ...prev, status: "disconnected", statusText: "Disconnected" }));
+    setState((prev) => ({ ...prev, status: "disconnected", statusText: "Disconnected", wsLatencyMs: null }));
   };
 
   const controlClient = useMemo(
@@ -207,6 +215,7 @@ export function useGo2Store() {
             ...prev,
             controlStatus: "connected",
             controlStatusText: "Control WS connected",
+            controlLatencyMs: null,
             controlLastError: "--",
             controlDebugLogs: appendLog(prev.controlDebugLogs, "socket open"),
           }));
@@ -216,6 +225,7 @@ export function useGo2Store() {
             ...prev,
             controlStatus: "disconnected",
             controlStatusText: `Control WS closed (${code})`,
+            controlLatencyMs: null,
             controlPilot: false,
             controlLastError: reason || prev.controlLastError,
             controlDebugLogs: appendLog(prev.controlDebugLogs, `socket closed code=${code} reason=${reason || "--"}`),
@@ -228,6 +238,7 @@ export function useGo2Store() {
             controlStatusText: message.startsWith("Control WS reconnect")
               ? message
               : "Control WS error",
+            controlLatencyMs: null,
             controlLastError: message,
             controlDebugLogs: appendLog(prev.controlDebugLogs, `client error: ${message}`),
           }));
@@ -308,6 +319,9 @@ export function useGo2Store() {
             ),
           }));
         },
+        onLatency: (latencyMs) => {
+          setState((prev) => ({ ...prev, controlLatencyMs: latencyMs }));
+        },
       }),
     [],
   );
@@ -331,6 +345,7 @@ export function useGo2Store() {
       ...prev,
       controlStatus: "disconnected",
       controlStatusText: "Control WS disconnected",
+      controlLatencyMs: null,
       controlPilot: false,
       controlDebugLogs: appendLog(prev.controlDebugLogs, "disconnect request"),
     }));

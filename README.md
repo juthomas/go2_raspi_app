@@ -284,8 +284,6 @@ python3 scripts/go2_control_ws_bridge.py --iface eth0 --host 0.0.0.0 --port 8766
 
 
 
-
-
 Si `go2ctl` fonctionne mais pas le bridge WS de contrôle, vérifie d'abord les dépendances du Python utilisé:
 
 ```bash

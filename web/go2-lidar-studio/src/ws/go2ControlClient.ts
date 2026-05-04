@@ -44,6 +44,7 @@ type Handlers = {
   onStatus?: (msg: StatusMessage) => void;
   onServerError?: (msg: ErrorMessage) => void;
   onServerLog?: (msg: LogMessage) => void;
+  onLatency?: (latencyMs: number | null) => void;
 };
 
 function normalizeControlWsUrl(raw: string): string {
@@ -66,6 +67,9 @@ export class Go2ControlClient {
   private shouldReconnect = false;
   private currentUrl = "";
   private readonly handlers: Handlers;
+  private pingTimer: number | null = null;
+  private pingSeq = 0;
+  private readonly pendingPings = new Map<number, number>();
 
   constructor(handlers: Handlers) {
     this.handlers = handlers;
@@ -90,6 +94,8 @@ export class Go2ControlClient {
   disconnect(): void {
     this.shouldReconnect = false;
     this.clearReconnectTimer();
+    this.stopPingLoop();
+    this.handlers.onLatency?.(null);
     if (!this.ws) return;
     try {
       this.ws.close();
@@ -136,9 +142,12 @@ export class Go2ControlClient {
     ws.onopen = () => {
       this.reconnectAttempt = 0;
       this.handlers.onOpen?.();
+      this.startPingLoop();
       this.send({ type: "claim_pilot" });
     };
     ws.onclose = (ev) => {
+      this.stopPingLoop();
+      this.handlers.onLatency?.(null);
       const reason = ev.reason || "connection closed";
       this.handlers.onClose?.(ev.code, reason);
       this.ws = null;
@@ -151,6 +160,7 @@ export class Go2ControlClient {
   }
 
   private disconnectSocketOnly(): void {
+    this.stopPingLoop();
     if (!this.ws) return;
     try {
       this.ws.close();
@@ -186,6 +196,17 @@ export class Go2ControlClient {
       return;
     }
     const msg = parsed as { type?: string };
+    if (msg.type === "pong") {
+      const seq = Number((msg as { seq?: number }).seq);
+      if (Number.isFinite(seq)) {
+        const sentAt = this.pendingPings.get(seq);
+        if (typeof sentAt === "number") {
+          this.pendingPings.delete(seq);
+          this.handlers.onLatency?.(Math.max(0, Math.round(performance.now() - sentAt)));
+        }
+      }
+      return;
+    }
     if (msg.type === "hello") {
       this.handlers.onHello?.(msg as HelloMessage);
       return;
@@ -205,5 +226,31 @@ export class Go2ControlClient {
     if (msg.type === "log") {
       this.handlers.onServerLog?.(msg as LogMessage);
     }
+  }
+
+  private startPingLoop(): void {
+    this.stopPingLoop();
+    this.pingTimer = window.setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      const seq = ++this.pingSeq;
+      this.pendingPings.set(seq, performance.now());
+      if (this.pendingPings.size > 20) {
+        const oldestKey = this.pendingPings.keys().next().value;
+        if (typeof oldestKey === "number") this.pendingPings.delete(oldestKey);
+      }
+      try {
+        this.ws.send(JSON.stringify({ type: "ping", seq, client_ts_ms: Date.now() }));
+      } catch {
+        // Ignore send errors, onclose/onerror handle status.
+      }
+    }, 2000);
+  }
+
+  private stopPingLoop(): void {
+    if (this.pingTimer !== null) {
+      window.clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    this.pendingPings.clear();
   }
 }

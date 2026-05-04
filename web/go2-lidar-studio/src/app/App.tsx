@@ -5,10 +5,39 @@ import { ControlsPanel } from "../ui/panels/ControlsPanel";
 import { Go2WebRtcVideo } from "../video/Go2WebRtcVideo";
 import { Go2ControlOverlay } from "../control/Go2ControlOverlay";
 
+const BIN_COUNT = 30;
+const LATENCY_CLAMP_MS = 500;
+
+function emptyBins(): number[] {
+  return Array.from({ length: BIN_COUNT }, () => 0);
+}
+
+function clampLatency(value: number | null): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(LATENCY_CLAMP_MS, Math.round(value)));
+}
+
+function displayLatency(value: number | null): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${Math.round(value)} ms` : "--";
+}
+
 export function App() {
   const { state, actions } = useGo2Store();
-  const [fpsBins, setFpsBins] = useState<number[]>(() => Array.from({ length: 30 }, () => 0));
+  const [webrtcRttMs, setWebrtcRttMs] = useState<number | null>(null);
+  const [fpsBins, setFpsBins] = useState<number[]>(() => emptyBins());
+  const [latencyBins, setLatencyBins] = useState<{
+    lidarWs: number[];
+    controlWs: number[];
+    webrtc: number[];
+  }>(() => ({
+    lidarWs: emptyBins(),
+    controlWs: emptyBins(),
+    webrtc: emptyBins(),
+  }));
   const frameCounterRef = useRef(0);
+  const wsLatencyRef = useRef<number | null>(null);
+  const controlLatencyRef = useRef<number | null>(null);
+  const webrtcLatencyRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!state.lastPayload) return;
@@ -16,16 +45,36 @@ export function App() {
   }, [state.lastPayload]);
 
   useEffect(() => {
+    wsLatencyRef.current = state.wsLatencyMs;
+  }, [state.wsLatencyMs]);
+
+  useEffect(() => {
+    controlLatencyRef.current = state.controlLatencyMs;
+  }, [state.controlLatencyMs]);
+
+  useEffect(() => {
+    webrtcLatencyRef.current = webrtcRttMs;
+  }, [webrtcRttMs]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       const n = frameCounterRef.current;
       frameCounterRef.current = 0;
       setFpsBins((prev) => [...prev.slice(1), n]);
+      setLatencyBins((prev) => ({
+        lidarWs: [...prev.lidarWs.slice(1), clampLatency(wsLatencyRef.current)],
+        controlWs: [...prev.controlWs.slice(1), clampLatency(controlLatencyRef.current)],
+        webrtc: [...prev.webrtc.slice(1), clampLatency(webrtcLatencyRef.current)],
+      }));
     }, 1000);
     return () => window.clearInterval(timer);
   }, []);
 
   const currentFps = fpsBins[fpsBins.length - 1] ?? 0;
   const maxFps = Math.max(1, ...fpsBins);
+  const lidarMax = Math.max(20, ...latencyBins.lidarWs);
+  const controlMax = Math.max(20, ...latencyBins.controlWs);
+  const webrtcMax = Math.max(20, ...latencyBins.webrtc);
 
   return (
     <div className="app-shell">
@@ -35,8 +84,11 @@ export function App() {
         <ControlsPanel
           status={state.status}
           statusText={state.statusText}
+          wsLatencyMs={state.wsLatencyMs}
           controlStatus={state.controlStatus}
           controlStatusText={state.controlStatusText}
+          controlLatencyMs={state.controlLatencyMs}
+          webrtcRttMs={webrtcRttMs}
           controlBridgeText={state.controlBridgeText}
           settings={state.settings}
           robotState={state.robotState}
@@ -53,6 +105,7 @@ export function App() {
         <Go2WebRtcVideo
           enabled={state.settings.webrtcVideoEnabled}
           baseUrl={state.settings.webrtcVideoUrl}
+          onRttUpdate={setWebrtcRttMs}
         />
         <Go2ControlOverlay
           enabled={state.settings.controlEnabled}
@@ -77,6 +130,54 @@ export function App() {
                 className="fps-bar"
                 style={{ height: `${Math.max(6, (v / maxFps) * 100)}%` }}
                 title={`${v} fps`}
+              />
+            ))}
+          </div>
+          <div className="latency-header">RTT (ms)</div>
+          <div className="latency-legend">
+            <span><i className="legend-dot lidar" />LiDAR WS</span>
+            <span><i className="legend-dot control" />Control WS</span>
+            <span><i className="legend-dot webrtc" />WebRTC</span>
+          </div>
+          <div className="latency-row-label">
+            <span><i className="legend-dot lidar" />LiDAR WS</span>
+            <span>{displayLatency(state.wsLatencyMs)}</span>
+          </div>
+          <div className="latency-row">
+            {latencyBins.lidarWs.map((v, i) => (
+              <span
+                key={`lidar-${i}`}
+                className="latency-bar lidar"
+                style={{ height: `${v <= 0 ? 2 : Math.max(6, (v / lidarMax) * 100)}%` }}
+                title={`LiDAR WS: ${v} ms`}
+              />
+            ))}
+          </div>
+          <div className="latency-row-label">
+            <span><i className="legend-dot control" />Control WS</span>
+            <span>{displayLatency(state.controlLatencyMs)}</span>
+          </div>
+          <div className="latency-row">
+            {latencyBins.controlWs.map((v, i) => (
+              <span
+                key={`control-${i}`}
+                className="latency-bar control"
+                style={{ height: `${v <= 0 ? 2 : Math.max(6, (v / controlMax) * 100)}%` }}
+                title={`Control WS: ${v} ms`}
+              />
+            ))}
+          </div>
+          <div className="latency-row-label">
+            <span><i className="legend-dot webrtc" />WebRTC</span>
+            <span>{displayLatency(webrtcRttMs)}</span>
+          </div>
+          <div className="latency-row">
+            {latencyBins.webrtc.map((v, i) => (
+              <span
+                key={`webrtc-${i}`}
+                className="latency-bar webrtc"
+                style={{ height: `${v <= 0 ? 2 : Math.max(6, (v / webrtcMax) * 100)}%` }}
+                title={`WebRTC: ${v} ms`}
               />
             ))}
           </div>
