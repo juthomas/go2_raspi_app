@@ -263,3 +263,37 @@ src/go2_cli/
   - interface reseau (`--iface`)
   - lien Ethernet
   - services actifs cote robot (sport/motion)
+
+
+
+
+
+```shell
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --include-joints
+```
+
+```shell
+python3 scripts/go2_video_webrtc_bridge.py --iface eth0 --port 8081 --fps 15
+```
+
+```shell
+python3 scripts/go2_control_ws_bridge.py --iface eth0 --host 0.0.0.0 --port 8766
+```
+
+.venv/bin/python scripts/go2_control_ws_bridge.py --iface eth0 --port 8766 --posture-guard-s 1.4 --pre-posture-delay-s 0.12
+
+
+
+
+
+Si `go2ctl` fonctionne mais pas le bridge WS de contrôle, vérifie d'abord les dépendances du Python utilisé:
+
+```bash
+python3 -m pip install websockets
+```
+
+Et vérifie que le port n'est pas déjà occupé:
+
+```bash
+ss -ltnp | rg ':8766'
+```

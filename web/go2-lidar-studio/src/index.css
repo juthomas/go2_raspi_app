@@ -186,7 +186,7 @@ main {
   position: absolute;
   right: 12px;
   bottom: 12px;
-  width: 220px;
+  width: 320px;
   background: rgba(6, 12, 18, 0.9);
   border: 1px solid #2a3f53;
   border-radius: 8px;
@@ -246,6 +246,23 @@ main {
 
 .control-debug div {
   margin: 2px 0;
+}
+
+.control-log-box {
+  margin-top: 6px;
+  border: 1px solid #2a3f53;
+  border-radius: 6px;
+  background: rgba(2, 6, 10, 0.9);
+  padding: 6px;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.control-copy-status {
+  margin-top: 4px;
+  font-size: 0.66rem;
+  color: #87d5ff;
+  min-height: 1em;
 }
 
 .fps-header {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Go2PointCloudMessage, Go2RobotState } from "../types/go2";
 import { Go2BridgeClient } from "../ws/go2BridgeClient";
+import { Go2ControlClient } from "../ws/go2ControlClient";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -33,9 +34,24 @@ export type UiSettings = {
 type StoreState = {
   status: ConnectionStatus;
   statusText: string;
+  controlStatus: ConnectionStatus;
+  controlStatusText: string;
+  controlBridgeText: string;
+  controlPilot: boolean;
+  controlLastAck: string;
+  controlLastError: string;
+  controlServerStatus: { lastOp: string; lastCode: number; pilot: boolean; vx: number; vy: number; vyaw: number } | null;
+  controlDebugLogs: string[];
   lastPayload: Go2PointCloudMessage | null;
   robotState: Go2RobotState | null;
   settings: UiSettings;
+};
+
+const CONTROL_LOG_LIMIT = 2000;
+const nowTag = (): string => new Date().toLocaleTimeString();
+const appendLog = (logs: string[], line: string): string[] => {
+  const next = [...logs, `[${nowTag()}] ${line}`];
+  return next.length > CONTROL_LOG_LIMIT ? next.slice(next.length - CONTROL_LOG_LIMIT) : next;
 };
 
 const SETTINGS_KEY = "go2_lidar_studio_settings_v1";
@@ -67,6 +83,7 @@ const DEFAULT_SETTINGS: UiSettings = {
 };
 
 function loadSettings(): UiSettings {
+  const defaultControlWsUrl = Go2ControlClient.defaultUrl();
   try {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) {
@@ -74,9 +91,7 @@ function loadSettings(): UiSettings {
         ...DEFAULT_SETTINGS,
         wsUrl: Go2BridgeClient.defaultUrl(),
         webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
-        controlWsUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${
-          window.location.hostname
-        }:8766`,
+        controlWsUrl: defaultControlWsUrl,
       };
     }
     const parsed = JSON.parse(raw) as Partial<UiSettings>;
@@ -84,9 +99,7 @@ function loadSettings(): UiSettings {
       ...DEFAULT_SETTINGS,
       wsUrl: Go2BridgeClient.defaultUrl(),
       webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
-      controlWsUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${
-        window.location.hostname
-      }:8766`,
+      controlWsUrl: defaultControlWsUrl,
       ...parsed,
     };
   } catch {
@@ -94,9 +107,7 @@ function loadSettings(): UiSettings {
       ...DEFAULT_SETTINGS,
       wsUrl: Go2BridgeClient.defaultUrl(),
       webrtcVideoUrl: `${window.location.protocol}//${window.location.hostname}:8081`,
-      controlWsUrl: `${window.location.protocol === "https:" ? "wss" : "ws"}://${
-        window.location.hostname
-      }:8766`,
+      controlWsUrl: defaultControlWsUrl,
     };
   }
 }
@@ -105,6 +116,14 @@ export function useGo2Store() {
   const [state, setState] = useState<StoreState>(() => ({
     status: "disconnected",
     statusText: "Idle",
+    controlStatus: "disconnected",
+    controlStatusText: "Control WS idle",
+    controlBridgeText: "Control bridge: --",
+    controlPilot: false,
+    controlLastAck: "--",
+    controlLastError: "--",
+    controlServerStatus: null,
+    controlDebugLogs: [],
     lastPayload: null,
     robotState: null,
     settings: loadSettings(),
@@ -158,6 +177,16 @@ export function useGo2Store() {
       saveSettings(next);
       return { ...prev, settings: next };
     });
+    if (patch.controlEnabled === false) {
+      controlClient.disconnect();
+      setState((prev) => ({
+        ...prev,
+        controlStatus: "disconnected",
+        controlStatusText: "Control WS disconnected",
+        controlPilot: false,
+        controlDebugLogs: appendLog(prev.controlDebugLogs, "control feature disabled"),
+      }));
+    }
   };
 
   const connect = () => {
@@ -170,11 +199,170 @@ export function useGo2Store() {
     setState((prev) => ({ ...prev, status: "disconnected", statusText: "Disconnected" }));
   };
 
+  const controlClient = useMemo(
+    () =>
+      new Go2ControlClient({
+        onOpen: () => {
+          setState((prev) => ({
+            ...prev,
+            controlStatus: "connected",
+            controlStatusText: "Control WS connected",
+            controlLastError: "--",
+            controlDebugLogs: appendLog(prev.controlDebugLogs, "socket open"),
+          }));
+        },
+        onClose: (code, reason) => {
+          setState((prev) => ({
+            ...prev,
+            controlStatus: "disconnected",
+            controlStatusText: `Control WS closed (${code})`,
+            controlPilot: false,
+            controlLastError: reason || prev.controlLastError,
+            controlDebugLogs: appendLog(prev.controlDebugLogs, `socket closed code=${code} reason=${reason || "--"}`),
+          }));
+        },
+        onError: (message) => {
+          setState((prev) => ({
+            ...prev,
+            controlStatus: "error",
+            controlStatusText: message.startsWith("Control WS reconnect")
+              ? message
+              : "Control WS error",
+            controlLastError: message,
+            controlDebugLogs: appendLog(prev.controlDebugLogs, `client error: ${message}`),
+          }));
+        },
+        onHello: (msg) => {
+          setState((prev) => ({
+            ...prev,
+            controlStatusText: "Control WS connected",
+            controlBridgeText: `Bridge topic: control (${msg.bridge ?? "go2_control_ws_bridge"}, iface ${
+              msg.iface ?? "?"
+            })`,
+            controlDebugLogs: appendLog(
+              prev.controlDebugLogs,
+              `hello bridge=${msg.bridge ?? "?"} iface=${msg.iface ?? "?"} proto=${msg.protocol ?? "?"}`,
+            ),
+          }));
+        },
+        onAck: (msg) => {
+          const text = `${msg.cmd ?? "?"}: ${msg.ok ? "ok" : "fail"}${msg.msg ? ` (${msg.msg})` : ""}`;
+          setState((prev) => ({
+            ...prev,
+            controlLastAck: text,
+            controlPilot: msg.cmd === "claim_pilot" ? Boolean(msg.ok) : prev.controlPilot,
+            controlStatusText:
+              msg.cmd === "claim_pilot"
+                ? msg.ok
+                  ? "Control WS pilot granted"
+                  : "Control WS pilot denied"
+                : prev.controlStatusText,
+            controlLastError: msg.ok ? prev.controlLastError : msg.msg ?? "command failed",
+            controlDebugLogs: appendLog(prev.controlDebugLogs, `ack ${text}`),
+          }));
+        },
+        onStatus: (msg) => {
+          setState((prev) => {
+            const nextStatus = {
+              lastOp: msg.last_op ?? "?",
+              lastCode: Number(msg.last_code ?? 0),
+              pilot: Boolean(msg.pilot),
+              vx: Number(msg.vx ?? 0),
+              vy: Number(msg.vy ?? 0),
+              vyaw: Number(msg.vyaw ?? 0),
+            };
+            const prevStatus = prev.controlServerStatus;
+            const changed =
+              !prevStatus ||
+              prevStatus.lastOp !== nextStatus.lastOp ||
+              prevStatus.lastCode !== nextStatus.lastCode ||
+              prevStatus.pilot !== nextStatus.pilot;
+            const logs = changed
+              ? appendLog(
+                  prev.controlDebugLogs,
+                  `status op=${nextStatus.lastOp} code=${nextStatus.lastCode} pilot=${nextStatus.pilot ? "yes" : "no"} target=(${nextStatus.vx.toFixed(2)},${nextStatus.vy.toFixed(2)},${nextStatus.vyaw.toFixed(2)})`,
+                )
+              : prev.controlDebugLogs;
+            return {
+              ...prev,
+              controlServerStatus: nextStatus,
+              controlPilot: nextStatus.pilot,
+              controlLastError: msg.last_error || prev.controlLastError,
+              controlDebugLogs: logs,
+            };
+          });
+        },
+        onServerError: (msg) => {
+          setState((prev) => ({
+            ...prev,
+            controlLastError: msg.msg ?? "unknown bridge error",
+            controlDebugLogs: appendLog(prev.controlDebugLogs, `server error: ${msg.msg ?? "unknown bridge error"}`),
+          }));
+        },
+        onServerLog: (msg) => {
+          setState((prev) => ({
+            ...prev,
+            controlDebugLogs: appendLog(
+              prev.controlDebugLogs,
+              `server ${msg.level ?? "info"}: ${msg.msg ?? "--"}`,
+            ),
+          }));
+        },
+      }),
+    [],
+  );
+
+  const connectControl = () => {
+    setState((prev) => ({
+      ...prev,
+      controlStatus: "connecting",
+      controlStatusText: "Connecting control WS...",
+      controlLastAck: "--",
+      controlLastError: "--",
+      controlDebugLogs: appendLog(prev.controlDebugLogs, `connect request url=${state.settings.controlWsUrl.trim()}`),
+    }));
+    controlClient.connect(state.settings.controlWsUrl.trim());
+  };
+
+  const disconnectControl = () => {
+    controlClient.send({ type: "release_pilot" });
+    controlClient.disconnect();
+    setState((prev) => ({
+      ...prev,
+      controlStatus: "disconnected",
+      controlStatusText: "Control WS disconnected",
+      controlPilot: false,
+      controlDebugLogs: appendLog(prev.controlDebugLogs, "disconnect request"),
+    }));
+  };
+
+  const sendControlCommand = (payload: Record<string, unknown>) => {
+    const ok = controlClient.send(payload);
+    setState((prev) => ({
+      ...prev,
+      controlDebugLogs: appendLog(
+        prev.controlDebugLogs,
+        `send ${ok ? "ok" : "fail"} ${JSON.stringify(payload)}`,
+      ),
+    }));
+    if (!ok) {
+      setState((prev) => ({
+        ...prev,
+        controlLastError: "Control WS not connected",
+      }));
+    }
+    return ok;
+  };
+
   return {
     state,
     actions: {
       connect,
       disconnect,
+      connectControl,
+      disconnectControl,
+      sendControlCommand,
+      clearControlLogs: () => setState((prev) => ({ ...prev, controlDebugLogs: [] })),
       updateSettings,
       clearSceneData: () => setState((prev) => ({ ...prev, lastPayload: null })),
     },

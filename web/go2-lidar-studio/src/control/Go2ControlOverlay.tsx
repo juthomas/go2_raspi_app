@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Props = {
   enabled: boolean;
-  active: boolean;
-  wsUrl: string;
+  controlConnected: boolean;
+  controlPilot: boolean;
+  controlStatusText: string;
+  lastAck: string;
+  lastError: string;
+  serverStatus: { lastOp: string; lastCode: number; pilot: boolean; vx: number; vy: number; vyaw: number } | null;
+  debugLogs: string[];
+  onClearLogs: () => void;
+  onSend: (payload: Record<string, unknown>) => boolean;
   speedVx: number;
   speedVyaw: number;
 };
@@ -17,25 +24,22 @@ function usePressedState(): [Pressed, (k: keyof Pressed, v: boolean) => void] {
   return [pressed, setKey];
 }
 
-function normalizeControlWsUrl(raw: string): string {
-  const parsed = new URL(raw.trim());
-  if (parsed.hostname === "localhost") {
-    // Avoid IPv6 localhost resolution mismatches when server only binds IPv4.
-    parsed.hostname = "127.0.0.1";
-  }
-  return parsed.toString();
-}
-
-export function Go2ControlOverlay({ enabled, active, wsUrl, speedVx, speedVyaw }: Props) {
-  const wsRef = useRef<WebSocket | null>(null);
-  const [status, setStatus] = useState("OFF");
-  const [isPilot, setIsPilot] = useState(false);
-  const [lastAck, setLastAck] = useState("--");
-  const [lastError, setLastError] = useState("--");
+export function Go2ControlOverlay({
+  enabled,
+  controlConnected,
+  controlPilot,
+  controlStatusText,
+  lastAck,
+  lastError,
+  serverStatus,
+  debugLogs,
+  onClearLogs,
+  onSend,
+  speedVx,
+  speedVyaw,
+}: Props) {
   const [pressed, setPressed] = usePressedState();
-  const [serverStatus, setServerStatus] = useState<{ lastOp: string; lastCode: number; pilot: boolean } | null>(
-    null,
-  );
+  const [copyStatus, setCopyStatus] = useState<string>("");
 
   const target = useMemo(() => {
     const vx = (pressed.up ? 1 : 0) * speedVx + (pressed.down ? -1 : 0) * speedVx;
@@ -44,180 +48,102 @@ export function Go2ControlOverlay({ enabled, active, wsUrl, speedVx, speedVyaw }
   }, [pressed, speedVx, speedVyaw]);
 
   useEffect(() => {
-    if (!enabled || !active) {
-      setStatus(!enabled ? "OFF" : "Idle (connect LiDAR WS)");
-      setIsPilot(false);
-      setLastAck("--");
-      setLastError("--");
-      setServerStatus(null);
-      try {
-        wsRef.current?.close();
-      } catch {
-        // ignore
-      }
-      wsRef.current = null;
-      return;
+    if (!enabled) {
+      setPressed("up", false);
+      setPressed("down", false);
+      setPressed("left", false);
+      setPressed("right", false);
     }
-
-    let ws: WebSocket;
-    try {
-      const parsed = new URL(normalizeControlWsUrl(wsUrl));
-      if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
-        setStatus("Bad WS URL (use ws:// or wss://)");
-        return;
-      }
-      ws = new WebSocket(parsed.toString());
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setStatus(`WS init error: ${msg}`);
-      setLastError(msg);
-      return;
-    }
-    wsRef.current = ws;
-    setStatus("Connecting...");
-    const connectStartedAt = performance.now();
-    let connectWatchdog: number | null = window.setTimeout(() => {
-      if (ws.readyState === WebSocket.CONNECTING) {
-        setStatus("Connect timeout");
-        setLastError("WebSocket connect timeout (check host/port/bridge)");
-        try {
-          ws.close();
-        } catch {
-          // ignore
-        }
-      }
-    }, 2500);
-
-    ws.onopen = () => {
-      if (connectWatchdog !== null) {
-        window.clearTimeout(connectWatchdog);
-        connectWatchdog = null;
-      }
-      setStatus("Connected");
-      setLastError("--");
-      ws.send(JSON.stringify({ type: "claim_pilot" }));
-    };
-    ws.onclose = (ev) => {
-      if (connectWatchdog !== null) {
-        window.clearTimeout(connectWatchdog);
-        connectWatchdog = null;
-      }
-      const elapsed = Math.round(performance.now() - connectStartedAt);
-      setStatus(`Closed (${ev.code})`);
-      if (ev.reason) setLastError(`close ${ev.code}: ${ev.reason}`);
-      else if (elapsed < 3000) setLastError(`close ${ev.code}: cannot reach bridge`);
-      setIsPilot(false);
-      wsRef.current = null;
-    };
-    ws.onerror = () => setStatus("Error");
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data) as {
-          type?: string;
-          cmd?: string;
-          ok?: boolean;
-          msg?: string;
-          last_code?: number;
-          last_op?: string;
-          last_error?: string;
-          pilot?: boolean;
-        };
-        if (msg.type === "ack") {
-          const text = `${msg.cmd ?? "?"}: ${msg.ok ? "ok" : "fail"}${msg.msg ? ` (${msg.msg})` : ""}`;
-          setLastAck(text);
-          if (msg.cmd === "claim_pilot" && msg.ok) setIsPilot(true);
-          if (!msg.ok) setLastError(msg.msg ?? "command failed");
-        } else if (msg.type === "error") {
-          setLastError(msg.msg ?? "unknown error");
-        } else if (msg.type === "status") {
-          setServerStatus({
-            lastOp: msg.last_op ?? "?",
-            lastCode: Number(msg.last_code ?? 0),
-            pilot: Boolean(msg.pilot),
-          });
-          if (msg.last_error) setLastError(msg.last_error);
-        }
-      } catch {
-        // ignore parse errors
-      }
-    };
-
-    return () => {
-      if (connectWatchdog !== null) {
-        window.clearTimeout(connectWatchdog);
-        connectWatchdog = null;
-      }
-      try {
-        wsRef.current?.send(JSON.stringify({ type: "release_pilot" }));
-        wsRef.current?.close();
-      } catch {
-        // ignore close errors
-      }
-      wsRef.current = null;
-      setIsPilot(false);
-    };
-  }, [enabled, active, wsUrl]);
+  }, [enabled, setPressed]);
 
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea") return;
-      if (e.key === "ArrowUp") {
+      if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") {
         e.preventDefault();
         setPressed("up", true);
-      } else if (e.key === "ArrowDown") {
+      } else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") {
         e.preventDefault();
         setPressed("down", true);
-      } else if (e.key === "ArrowLeft") {
+      } else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") {
         e.preventDefault();
         setPressed("left", true);
-      } else if (e.key === "ArrowRight") {
+      } else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") {
         e.preventDefault();
         setPressed("right", true);
+      } else if (e.key === " " || e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        setPressed("up", false);
+        setPressed("down", false);
+        setPressed("left", false);
+        setPressed("right", false);
+        onSend({ type: "stop" });
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === "ArrowUp") setPressed("up", false);
-      else if (e.key === "ArrowDown") setPressed("down", false);
-      else if (e.key === "ArrowLeft") setPressed("left", false);
-      else if (e.key === "ArrowRight") setPressed("right", false);
+      if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") setPressed("up", false);
+      else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") setPressed("down", false);
+      else if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") setPressed("left", false);
+      else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") setPressed("right", false);
+    };
+    const onBlur = () => {
+      setPressed("up", false);
+      setPressed("down", false);
+      setPressed("left", false);
+      setPressed("right", false);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
     };
-  }, [enabled, setPressed]);
+  }, [enabled, onSend, setPressed]);
 
   useEffect(() => {
-    if (!enabled) return;
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !isPilot) return;
+    if (!enabled || !controlConnected || !controlPilot) return;
     const timer = window.setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(
-        JSON.stringify({
-          type: "twist",
-          vx: target.vx,
-          vy: target.vy,
-          vyaw: target.vyaw,
-        }),
-      );
+      onSend({
+        type: "twist",
+        vx: target.vx,
+        vy: target.vy,
+        vyaw: target.vyaw,
+      });
     }, 80);
     return () => window.clearInterval(timer);
-  }, [enabled, target, isPilot]);
+  }, [controlConnected, controlPilot, enabled, onSend, target]);
 
-  const send = (payload: Record<string, unknown>) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify(payload));
+  const copyLogs = async () => {
+    const payload = debugLogs.length ? debugLogs.join("\n") : "[--] no logs yet";
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopyStatus("logs copied");
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = payload;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopyStatus(ok ? "logs copied" : "copy failed");
+      } catch {
+        setCopyStatus("copy failed");
+      }
+    }
+    window.setTimeout(() => setCopyStatus(""), 1500);
   };
 
   return (
     <div className={`control-overlay ${enabled ? "" : "hidden"}`}>
-      <div className="control-header">Control WS: {status}</div>
+      <div className="control-header">Control WS: {controlStatusText}</div>
       <div className="control-grid">
         <button
           onPointerDown={() => setPressed("up", true)}
@@ -235,7 +161,7 @@ export function Go2ControlOverlay({ enabled, active, wsUrl, speedVx, speedVyaw }
         >
           LEFT
         </button>
-        <button onClick={() => send({ type: "stop" })}>STOP</button>
+        <button onClick={() => onSend({ type: "stop" })}>STOP</button>
         <button
           onPointerDown={() => setPressed("right", true)}
           onPointerUp={() => setPressed("right", false)}
@@ -254,18 +180,36 @@ export function Go2ControlOverlay({ enabled, active, wsUrl, speedVx, speedVyaw }
         </button>
       </div>
       <div className="control-actions">
-        <button onClick={() => send({ type: "stand_up" })}>StandUp</button>
-        <button onClick={() => send({ type: "stand_down" })}>StandDown</button>
+        <button onClick={() => onSend({ type: "normal_mode" })}>NormalMode</button>
+        <button onClick={() => onSend({ type: "stand_up" })}>StandUp</button>
+        <button onClick={() => onSend({ type: "stand_down" })}>StandDown</button>
+        <button onClick={() => onSend({ type: "balance_stand" })}>BalanceStand</button>
+        <button onClick={() => onSend({ type: "recovery_stand" })}>RecoveryStand</button>
+        <button onClick={onClearLogs}>ClearLogs</button>
+        <button onClick={() => void copyLogs()}>CopyLogs</button>
       </div>
       <div className="control-debug">
-        <div>pilot: {isPilot ? "yes" : "no"} / srv: {serverStatus?.pilot ? "yes" : "no"}</div>
-        <div>target: vx={target.vx.toFixed(2)} vyaw={target.vyaw.toFixed(2)}</div>
+        <div>
+          conn: {controlConnected ? "yes" : "no"} pilot: {controlPilot ? "yes" : "no"} / srv:{" "}
+          {serverStatus?.pilot ? "yes" : "no"}
+        </div>
+        <div>target(local): vx={target.vx.toFixed(2)} vyaw={target.vyaw.toFixed(2)}</div>
+        <div>
+          target(server): vx={serverStatus?.vx?.toFixed(2) ?? "--"} vy={serverStatus?.vy?.toFixed(2) ?? "--"} vyaw=
+          {serverStatus?.vyaw?.toFixed(2) ?? "--"}
+        </div>
         <div>keys: U{+pressed.up} D{+pressed.down} L{+pressed.left} R{+pressed.right}</div>
         <div>last: {serverStatus ? `${serverStatus.lastOp}:${serverStatus.lastCode}` : "--"}</div>
         <div>ack: {lastAck}</div>
         <div>err: {lastError}</div>
+        <div className="control-log-box">
+          {(debugLogs.length ? debugLogs : ["[--] no logs yet"]).map((line, idx) => (
+            <div key={`${idx}-${line}`}>{line}</div>
+          ))}
+        </div>
+        <div className="control-copy-status">{copyStatus || "\u00a0"}</div>
       </div>
-      <div className="control-hint">Keyboard: Arrow keys (hold)</div>
+      <div className="control-hint">Keyboard: WASD or Arrow keys (hold), Space/X = Stop</div>
     </div>
   );
 }

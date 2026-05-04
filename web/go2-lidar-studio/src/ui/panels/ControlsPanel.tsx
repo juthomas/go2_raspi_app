@@ -5,20 +5,30 @@ import type { Go2RobotState } from "../../types/go2";
 type Props = {
   status: ConnectionStatus;
   statusText: string;
+  controlStatus: ConnectionStatus;
+  controlStatusText: string;
+  controlBridgeText: string;
   settings: UiSettings;
   robotState: Go2RobotState | null;
   onConnect: () => void;
   onDisconnect: () => void;
+  onControlConnect: () => void;
+  onControlDisconnect: () => void;
   onSettingsChange: (patch: Partial<UiSettings>) => void;
 };
 
 export function ControlsPanel({
   status,
   statusText,
+  controlStatus,
+  controlStatusText,
+  controlBridgeText,
   settings,
   robotState,
   onConnect,
   onDisconnect,
+  onControlConnect,
+  onControlDisconnect,
   onSettingsChange,
 }: Props) {
   const pos = Array.isArray(robotState?.position) ? robotState.position : [];
@@ -81,6 +91,14 @@ export function ControlsPanel({
             placeholder="ws://127.0.0.1:8766"
           />
         </label>
+        <div className="row">
+          <button onClick={onControlConnect} disabled={!settings.controlEnabled || controlStatus === "connecting"}>
+            Connect Control WS
+          </button>
+          <button onClick={onControlDisconnect}>Disconnect Control WS</button>
+        </div>
+        <p className={`status ${controlStatus}`}>{controlStatusText}</p>
+        <p className={`status ${controlStatus === "connected" ? "connected" : "disconnected"}`}>{controlBridgeText}</p>
         <label>
           Linear speed ({settings.controlSpeedVx.toFixed(2)} m/s)
           <input

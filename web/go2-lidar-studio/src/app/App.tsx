@@ -35,10 +35,15 @@ export function App() {
         <ControlsPanel
           status={state.status}
           statusText={state.statusText}
+          controlStatus={state.controlStatus}
+          controlStatusText={state.controlStatusText}
+          controlBridgeText={state.controlBridgeText}
           settings={state.settings}
           robotState={state.robotState}
           onConnect={actions.connect}
           onDisconnect={actions.disconnect}
+          onControlConnect={actions.connectControl}
+          onControlDisconnect={actions.disconnectControl}
           onSettingsChange={actions.updateSettings}
         />
       </aside>
@@ -51,7 +56,15 @@ export function App() {
         />
         <Go2ControlOverlay
           enabled={state.settings.controlEnabled}
-          wsUrl={state.settings.controlWsUrl}
+          controlConnected={state.controlStatus === "connected"}
+          controlPilot={state.controlPilot}
+          controlStatusText={state.controlStatusText}
+          lastAck={state.controlLastAck}
+          lastError={state.controlLastError}
+          serverStatus={state.controlServerStatus}
+          debugLogs={state.controlDebugLogs}
+          onClearLogs={actions.clearControlLogs}
+          onSend={actions.sendControlCommand}
           speedVx={state.settings.controlSpeedVx}
           speedVyaw={state.settings.controlSpeedVyaw}
         />

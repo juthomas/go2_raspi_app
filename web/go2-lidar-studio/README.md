@@ -72,6 +72,12 @@ Then in GO2 LiDAR Studio:
 
 ## Optional robot control bridge (WebSocket)
 
+Install the Python dependency (same environment as the bridge):
+
+```bash
+pip install websockets
+```
+
 Run the control bridge:
 
 ```bash
@@ -82,6 +88,11 @@ Then in GO2 LiDAR Studio:
 - enable `Enable robot control feature`
 - set `Control WS URL` to `ws://<ip-du-pi>:8766`
 - use keyboard arrows or on-screen directional buttons
+
+Troubleshooting:
+- if `python3 scripts/go2_control_ws_bridge.py ...` exits instantly, check missing module errors (typically `websockets`)
+- if the app is opened from another device, avoid `localhost` in `Control WS URL` (use the Pi IP or hostname)
+- two WebSocket connections on the same page are fine (`8765` LiDAR + `8766` control)
 
 ## Data contract expected
 
@@ -94,15 +105,3 @@ Point cloud messages:
 No breaking changes are required on existing LiDAR fields.
 
 
-
-```shell
-python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --include-joints
-```
-
-```shell
-python3 scripts/go2_video_webrtc_bridge.py --iface eth0 --port 8081 --fps 15
-```
-
-```shell
-python3 scripts/go2_control_ws_bridge.py --iface eth0 --host 0.0.0.0 --port 8766
-```
