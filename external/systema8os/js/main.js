@@ -378,7 +378,10 @@ class App {
         });
 
         // Sliders vitesse
-        const updateSpeeds = () => this.go2ctrl._speedVx = getVx(), this.go2ctrl._speedVyaw = getVyaw();
+        const updateSpeeds = () => {
+            this.go2ctrl._speedVx = getVx();
+            this.go2ctrl._speedVyaw = getVyaw();
+        };
         $('go2-ctrl-vx')?.addEventListener('input', (e) => {
             const v = parseFloat(e.target.value) / 100;
             if ($('go2-ctrl-vx-val')) $('go2-ctrl-vx-val').textContent = v.toFixed(2);
@@ -389,6 +392,7 @@ class App {
             if ($('go2-ctrl-vyaw-val')) $('go2-ctrl-vyaw-val').textContent = v.toFixed(2);
             this.go2ctrl._speedVyaw = v;
         });
+        updateSpeeds();
 
         // D-Pad (pointerdown/up pour touch + souris)
         const dpad = (btnId, vx, vy, vyaw) => {

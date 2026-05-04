@@ -14,7 +14,7 @@ export class ScatterPad {
         this.mouseState = { lastPlayTime: 0 };
 
         // Automation
-        this.automations = [];
+        this.automations = []; 
         this.isRecording = false;
         this.recStartTime = 0;
         this.recPath = [];
@@ -27,15 +27,6 @@ export class ScatterPad {
         this.lastMouseX = 0;
         this.lastMouseY = 0;
         this.externalCursor = null; // {x, y} normalized
-
-        // Robot GO2 dans l'espace scatter
-        this.robotCursor       = null;  // { nx, ny, yaw }
-        this.robotActive       = false; // active le scan/son autour du robot
-        this.robotIsRecording  = false;
-        this.robotRecordedPath = [];    // [{ nx, ny }] pour l'affichage
-        this.robotPlaybackIdx  = -1;
-        this._robotScanState   = { lastPlayTime: 0 };
-        this.robotRadius       = 0.05; // rayon du reader robot (unités scatter)
 
         this.params = {
             duration: 0.35,
@@ -164,37 +155,6 @@ export class ScatterPad {
         this.automations = [];
         this.isRecording = false;
         return "LFOS CLEARED";
-    }
-
-    // ── API Robot GO2 ─────────────────────────────────────────────────────────
-
-    setRobotCursor(nx, ny, yaw = 0) {
-        this.robotCursor = { nx, ny, yaw: Number(yaw) || 0 };
-    }
-
-    clearRobotCursor() {
-        this.robotCursor = null;
-    }
-
-    setRobotActive(v) {
-        this.robotActive = !!v;
-        if (!v) this._robotScanState.lastPlayTime = 0;
-    }
-
-    setRobotRecording(v) {
-        this.robotIsRecording = !!v;
-    }
-
-    setRecordedPath(path) {
-        this.robotRecordedPath = Array.isArray(path) ? path : [];
-    }
-
-    setPlaybackIdx(idx) {
-        this.robotPlaybackIdx = typeof idx === 'number' ? idx : -1;
-    }
-
-    setRobotRadius(v) {
-        this.robotRadius = Math.max(0.005, Math.min(0.5, Number(v) || 0.05));
     }
 
     initSpatial() {
@@ -495,14 +455,6 @@ export class ScatterPad {
             });
         }
 
-        // Scan audio autour du robot GO2
-        if (this.robotActive && this.robotCursor && this.store.frames.length > 0) {
-            const savedRadius = this.params.radius;
-            this.params.radius = this.robotRadius;
-            this.scanAt(this.robotCursor.nx, this.robotCursor.ny, this._robotScanState);
-            this.params.radius = savedRadius;
-        }
-
         this.render();
     }
 
@@ -691,105 +643,6 @@ export class ScatterPad {
             this.ctx.fill();
             this.ctx.fillStyle = '#fff';
             this.ctx.fillText("REC LFO", 35, 24);
-        }
-
-        // ── Trajectoire enregistrée du robot ──────────────────────────────────
-        if (this.robotRecordedPath.length > 1) {
-            this.ctx.strokeStyle = 'rgba(255, 80, 40, 0.55)';
-            this.ctx.lineWidth = 1.5;
-            this.ctx.setLineDash([4, 3]);
-            this.ctx.beginPath();
-            this.robotRecordedPath.forEach((pt, i) => {
-                const px = (pt.nx * this.width * this.scale) + this.panX;
-                const py = ((1 - pt.ny) * this.height * this.scale) + this.panY;
-                if (i === 0) this.ctx.moveTo(px, py);
-                else this.ctx.lineTo(px, py);
-            });
-            this.ctx.stroke();
-            this.ctx.setLineDash([]);
-
-            // Waypoint de playback courant
-            if (this.robotPlaybackIdx >= 0 && this.robotPlaybackIdx < this.robotRecordedPath.length) {
-                const pt = this.robotRecordedPath[this.robotPlaybackIdx];
-                const px = (pt.nx * this.width * this.scale) + this.panX;
-                const py = ((1 - pt.ny) * this.height * this.scale) + this.panY;
-                this.ctx.strokeStyle = '#ff3300';
-                this.ctx.lineWidth = 2;
-                this.ctx.beginPath();
-                this.ctx.arc(px, py, 7, 0, Math.PI * 2);
-                this.ctx.stroke();
-            }
-        }
-
-        // ── Marqueur robot GO2 ────────────────────────────────────────────────
-        if (this.robotCursor) {
-            const rx = (this.robotCursor.nx * this.width * this.scale) + this.panX;
-            const ry = ((1 - this.robotCursor.ny) * this.height * this.scale) + this.panY;
-
-            // Rayon d'activation
-            if (this.robotActive) {
-                const rPx = this.robotRadius * this.width * this.scale;
-                this.ctx.strokeStyle = 'rgba(255, 220, 0, 0.25)';
-                this.ctx.lineWidth = 1;
-                this.ctx.beginPath();
-                this.ctx.arc(rx, ry, rPx, 0, Math.PI * 2);
-                this.ctx.stroke();
-            }
-
-            // Corps du robot (carré orienté selon le cap)
-            const SZ = 13;
-            this.ctx.save();
-            this.ctx.translate(rx, ry);
-            // Yaw ROS → canvas : forward robot = scatter Y+ = canvas vers le haut
-            // canvas up = angle -π/2 ; on tourne de -yaw
-            this.ctx.rotate(-this.robotCursor.yaw);
-
-            // Carré corps
-            this.ctx.fillStyle = this.robotActive ? '#ffdd00' : 'rgba(255,220,0,0.45)';
-            this.ctx.fillRect(-SZ / 2, -SZ / 2, SZ, SZ);
-
-            // Flèche avant (haut dans le repère du carré)
-            this.ctx.fillStyle = '#ff4400';
-            this.ctx.beginPath();
-            this.ctx.moveTo(0, -SZ / 2 - 6);
-            this.ctx.lineTo(-4, -SZ / 2 + 1);
-            this.ctx.lineTo(4, -SZ / 2 + 1);
-            this.ctx.closePath();
-            this.ctx.fill();
-
-            this.ctx.restore();
-
-            // Label "GO2"
-            this.ctx.fillStyle = '#ffdd00';
-            this.ctx.font = '9px monospace';
-            this.ctx.textAlign = 'left';
-            this.ctx.fillText('GO2', rx + SZ / 2 + 3, ry + 4);
-        }
-
-        // ── Indicateur REC robot ──────────────────────────────────────────────
-        if (this.robotIsRecording) {
-            const blink = Math.floor(Date.now() / 450) % 2 === 0;
-            this.ctx.textAlign = 'right';
-            this.ctx.font = '9px monospace';
-            if (blink) {
-                this.ctx.fillStyle = '#ff0000';
-                this.ctx.beginPath();
-                this.ctx.arc(this.width - 12, 12, 7, 0, Math.PI * 2);
-                this.ctx.fill();
-            }
-            this.ctx.fillStyle = '#ff4444';
-            this.ctx.fillText('GO2 REC', this.width - 22, 26);
-        }
-
-        // ── Indicateur PLAY robot ─────────────────────────────────────────────
-        if (this.robotPlaybackIdx >= 0) {
-            this.ctx.textAlign = 'right';
-            this.ctx.font = '9px monospace';
-            this.ctx.fillStyle = '#44ff88';
-            const pct = this.robotRecordedPath.length > 0
-                ? Math.round((this.robotPlaybackIdx / this.robotRecordedPath.length) * 100)
-                : 0;
-            this.ctx.fillText(`GO2 PLAY ${pct}%`, this.width - 5, 42);
         }
     }
 }

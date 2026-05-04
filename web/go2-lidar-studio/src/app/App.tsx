@@ -168,8 +168,13 @@ export function App() {
           speedVyaw={state.settings.controlSpeedVyaw}
         />
         <div className="fps-debug-overlay">
-          <div className="fps-header">WS frames/s: {currentFps}</div>
-          <div className="fps-bars">
+          {/* <div className="fps-header">WS frames/s: {currentFps}</div> */}
+          <div className="latency-row-label">
+            <span><i className="legend-dot lidar" />LiDAR WS</span>
+            <span>{currentFps} fps</span>
+          </div>
+
+          <div className="latency-row">
             {fpsBins.map((v, i) => (
               <span
                 key={i}
@@ -178,13 +183,6 @@ export function App() {
                 title={`${v} fps`}
               />
             ))}
-          </div>
-          <div className="latency-header">RTT (ms)</div>
-          <div className="latency-legend">
-            <span><i className="legend-dot lidar" />LiDAR WS</span>
-            <span><i className="legend-dot control" />Control WS</span>
-            <span><i className="legend-dot webrtc" />WebRTC</span>
-            <span><i className="legend-dot network" />Pi network</span>
           </div>
           <div className="latency-row-label">
             <span><i className="legend-dot lidar" />LiDAR WS</span>
