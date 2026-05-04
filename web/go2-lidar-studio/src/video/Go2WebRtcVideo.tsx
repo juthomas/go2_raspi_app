@@ -31,12 +31,14 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [status, setStatus] = useState("OFF");
   const [fps, setFps] = useState(0);
+  const [sessionNonce, setSessionNonce] = useState(0);
 
   useEffect(() => {
     if (!enabled) {
       setStatus("OFF");
       setFps(0);
       onRttUpdate?.(null);
+      setSessionNonce(0);
       if (videoRef.current) videoRef.current.srcObject = null;
       return;
     }
@@ -44,12 +46,35 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
     const pc = new RTCPeerConnection();
     let closed = false;
     let statsTimer: number | null = null;
+    let reconnectTimer: number | null = null;
     setStatus("Connecting...");
+
+    const scheduleReconnect = (reason: string) => {
+      if (closed || reconnectTimer !== null) return;
+      setStatus(`Reconnecting (${reason})...`);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        if (!closed) setSessionNonce((v) => v + 1);
+      }, 1500);
+    };
 
     pc.addTransceiver("video", { direction: "recvonly" });
     pc.onconnectionstatechange = () => {
       if (closed) return;
-      setStatus(`WebRTC: ${pc.connectionState}`);
+      const s = pc.connectionState;
+      setStatus(`WebRTC: ${s}`);
+      if (s === "failed" || s === "disconnected" || s === "closed") {
+        onRttUpdate?.(null);
+        scheduleReconnect(s);
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (closed) return;
+      const s = pc.iceConnectionState;
+      if (s === "failed" || s === "disconnected" || s === "closed") {
+        onRttUpdate?.(null);
+        scheduleReconnect(`ice-${s}`);
+      }
     };
     pc.ontrack = (event) => {
       if (!videoRef.current) return;
@@ -109,12 +134,17 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
         setFps(0);
         onRttUpdate?.(null);
         setStatus(`Error: ${msg}${extra}`);
+        scheduleReconnect("offer");
       }
     })();
 
     return () => {
       closed = true;
       try {
+        if (reconnectTimer !== null) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         if (statsTimer !== null) {
           window.clearInterval(statsTimer);
           statsTimer = null;
@@ -127,7 +157,7 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
       onRttUpdate?.(null);
       if (videoRef.current) videoRef.current.srcObject = null;
     };
-  }, [enabled, baseUrl, onRttUpdate]);
+  }, [enabled, baseUrl, onRttUpdate, sessionNonce]);
 
   useEffect(() => {
     if (!enabled || !videoRef.current) {

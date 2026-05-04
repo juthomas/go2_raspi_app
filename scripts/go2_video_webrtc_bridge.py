@@ -124,13 +124,16 @@ async def _create_app(args: argparse.Namespace) -> web.Application:
     source_track = Go2VideoTrack(shared, fps=args.fps)
     pcs: set[RTCPeerConnection] = set()
     peer_created_at: dict[RTCPeerConnection, float] = {}
+    peer_disconnected_at: dict[RTCPeerConnection, float] = {}
     stale_peer_timeout_s = 30.0
+    disconnected_grace_s = 15.0
 
     async def close_peer(pc: RTCPeerConnection, reason: str) -> None:
         # Ensure each peer is closed exactly once and removed from bookkeeping.
         was_tracked = pc in pcs
         pcs.discard(pc)
         peer_created_at.pop(pc, None)
+        peer_disconnected_at.pop(pc, None)
         with contextlib.suppress(Exception):
             await pc.close()
         if was_tracked:
@@ -168,13 +171,23 @@ async def _create_app(args: argparse.Namespace) -> web.Application:
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
-            if pc.connectionState in {"failed", "closed", "disconnected"}:
+            state = pc.connectionState
+            if state in {"failed", "closed"}:
                 await close_peer(pc, pc.connectionState)
+            elif state == "disconnected":
+                peer_disconnected_at.setdefault(pc, time.monotonic())
+            elif state == "connected":
+                peer_disconnected_at.pop(pc, None)
 
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange() -> None:
-            if pc.iceConnectionState in {"failed", "closed", "disconnected"}:
-                await close_peer(pc, f"ice-{pc.iceConnectionState}")
+            state = pc.iceConnectionState
+            if state in {"failed", "closed"}:
+                await close_peer(pc, f"ice-{state}")
+            elif state == "disconnected":
+                peer_disconnected_at.setdefault(pc, time.monotonic())
+            elif state in {"connected", "completed"}:
+                peer_disconnected_at.pop(pc, None)
 
         try:
             track = relay.subscribe(source_track, buffered=False)
@@ -203,6 +216,13 @@ async def _create_app(args: argparse.Namespace) -> web.Application:
             ]
             for pc in stale:
                 await close_peer(pc, "stale-handshake-timeout")
+            disconnected = [
+                pc
+                for pc, disconnected_at in list(peer_disconnected_at.items())
+                if (now - disconnected_at) > disconnected_grace_s
+            ]
+            for pc in disconnected:
+                await close_peer(pc, "disconnected-timeout")
 
     async def on_startup(app_: web.Application) -> None:
         app_["peer_gc_task"] = asyncio.create_task(close_stale_peers_task())
@@ -219,6 +239,7 @@ async def _create_app(args: argparse.Namespace) -> web.Application:
         if coros:
             await asyncio.gather(*coros, return_exceptions=True)
         peer_created_at.clear()
+        peer_disconnected_at.clear()
 
     app.add_routes(
         [

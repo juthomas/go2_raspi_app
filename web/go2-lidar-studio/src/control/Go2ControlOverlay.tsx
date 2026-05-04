@@ -146,6 +146,7 @@ export function Go2ControlOverlay({
       <div className="control-header">Control WS: {controlStatusText}</div>
       <div className="control-grid">
         <button
+          className="btn-fwd"
           onPointerDown={() => setPressed("up", true)}
           onPointerUp={() => setPressed("up", false)}
           onPointerCancel={() => setPressed("up", false)}
@@ -154,6 +155,7 @@ export function Go2ControlOverlay({
           FWD
         </button>
         <button
+          className="btn-left"
           onPointerDown={() => setPressed("left", true)}
           onPointerUp={() => setPressed("left", false)}
           onPointerCancel={() => setPressed("left", false)}
@@ -161,8 +163,11 @@ export function Go2ControlOverlay({
         >
           LEFT
         </button>
-        <button onClick={() => onSend({ type: "stop" })}>STOP</button>
+        <button className="btn-stop" onClick={() => onSend({ type: "stop" })}>
+          STOP
+        </button>
         <button
+          className="btn-right"
           onPointerDown={() => setPressed("right", true)}
           onPointerUp={() => setPressed("right", false)}
           onPointerCancel={() => setPressed("right", false)}
@@ -171,6 +176,7 @@ export function Go2ControlOverlay({
           RIGHT
         </button>
         <button
+          className="btn-back"
           onPointerDown={() => setPressed("down", true)}
           onPointerUp={() => setPressed("down", false)}
           onPointerCancel={() => setPressed("down", false)}
