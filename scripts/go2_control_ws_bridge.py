@@ -4,9 +4,10 @@ Simple GO2 control bridge (DDS sport RPC <-> WebSocket JSON).
 
 WebSocket protocol:
   - server -> client:
-      {"type":"hello","iface":"eth0"}
+      {"type":"hello","iface":"eth0","multi_control":true}
       {"type":"ack","cmd":"stand_up","ok":true}
-      {"type":"status","pilot":true,"vx":0.2,"vy":0.0,"vyaw":0.0}
+      {"type":"status","pilot":true,"posture_pilot":true,"vx":0.2,...}
+      {"type":"robot_error","op":"move_loop","code":4202,"hint":"..."}
       {"type":"log","level":"info","msg":"pilot granted","ts":1710000000.12}
       {"type":"error","msg":"..."}
   - client -> server:
@@ -61,6 +62,10 @@ def _safe_float(raw: Any, *, default: float = 0.0) -> float:
     return value
 
 
+def _client_label(ws: Any) -> str:
+    return str(getattr(ws, "remote_address", "?"))
+
+
 async def _amain(args: argparse.Namespace) -> None:
     try:
         import websockets
@@ -89,20 +94,50 @@ async def _amain(args: argparse.Namespace) -> None:
     pilot: dict[str, Any] = {"ws": None}
     pilot_lock = asyncio.Lock()
 
-    target = {"vx": 0.0, "vy": 0.0, "vyaw": 0.0, "ts": 0.0}
-    target_lock = asyncio.Lock()
+    # Per-client twist targets (last-writer-wins across clients).
+    targets: dict[int, dict[str, Any]] = {}
+    targets_lock = asyncio.Lock()
+    active_meta = {"controller": None, "vx": 0.0, "vy": 0.0, "vyaw": 0.0}
+    active_meta_lock = asyncio.Lock()
+
     runtime = {"last_code": 0, "last_op": "init", "last_error": "", "last_move_ts": 0.0}
     runtime_lock = asyncio.Lock()
     sdk_lock = asyncio.Lock()
     control_gate = {"until_ts": 0.0}
     control_gate_lock = asyncio.Lock()
 
-    async def set_target(vx: float, vy: float, vyaw: float) -> None:
-        async with target_lock:
-            target["vx"] = float(vx)
-            target["vy"] = float(vy)
-            target["vyaw"] = float(vyaw)
-            target["ts"] = time.monotonic()
+    async def set_client_target(ws: Any, vx: float, vy: float, vyaw: float) -> None:
+        key = id(ws)
+        async with targets_lock:
+            targets[key] = {
+                "vx": float(vx),
+                "vy": float(vy),
+                "vyaw": float(vyaw),
+                "ts": time.monotonic(),
+                "label": _client_label(ws),
+            }
+
+    async def clear_client_target(ws: Any) -> None:
+        key = id(ws)
+        async with targets_lock:
+            targets.pop(key, None)
+
+    async def clear_all_targets() -> None:
+        async with targets_lock:
+            targets.clear()
+
+    async def resolve_active_target() -> tuple[float, float, float, str | None]:
+        now = time.monotonic()
+        best: dict[str, Any] | None = None
+        async with targets_lock:
+            for entry in targets.values():
+                if now - float(entry["ts"]) > args.command_timeout:
+                    continue
+                if best is None or float(entry["ts"]) > float(best["ts"]):
+                    best = entry
+        if best is None:
+            return 0.0, 0.0, 0.0, None
+        return float(best["vx"]), float(best["vy"]), float(best["vyaw"]), str(best["label"])
 
     async def _send_json(ws: Any, payload: dict[str, Any]) -> None:
         try:
@@ -116,50 +151,76 @@ async def _amain(args: argparse.Namespace) -> None:
             payload["msg"] = msg
         await _send_json(ws, payload)
 
-    async def _broadcast_log(msg: str, *, level: str = "info") -> None:
-        payload = {"type": "log", "level": str(level), "msg": str(msg), "ts": time.time()}
-        print(f"[go2_control_ws][{level}] {msg}")
+    async def _broadcast_payload(payload: dict[str, Any]) -> None:
+        text = json.dumps(payload)
         async with clients_lock:
-            dead: list[Any] = []
-            for c in clients:
-                try:
-                    await c.send(json.dumps(payload))
-                except Exception:
-                    dead.append(c)
-            for c in dead:
-                clients.discard(c)
+            snapshot = list(clients)
+        dead: list[Any] = []
+        for c in snapshot:
+            try:
+                await asyncio.wait_for(c.send(text), timeout=1.0)
+            except Exception:
+                dead.append(c)
+        if dead:
+            async with clients_lock:
+                for c in dead:
+                    clients.discard(c)
 
-    async def _broadcast_status() -> None:
-        async with target_lock:
-            vx = float(target["vx"])
-            vy = float(target["vy"])
-            vyaw = float(target["vyaw"])
+    async def _build_status_payload() -> dict[str, Any]:
+        vx, vy, vyaw, controller = await resolve_active_target()
+        async with active_meta_lock:
+            active_meta["controller"] = controller
+            active_meta["vx"] = vx
+            active_meta["vy"] = vy
+            active_meta["vyaw"] = vyaw
         async with pilot_lock:
-            has_pilot = pilot["ws"] is not None
+            has_posture_pilot = pilot["ws"] is not None
+        async with clients_lock:
+            n_clients = len(clients)
         async with runtime_lock:
             last_code = int(runtime["last_code"])
             last_op = str(runtime["last_op"])
             last_error = str(runtime["last_error"])
 
-        payload = {
+        move_ok = last_code == 0
+        move_hint = _code_hint(last_code) if last_code != 0 else "OK"
+        return {
             "type": "status",
-            "pilot": has_pilot,
+            "pilot": has_posture_pilot,
+            "posture_pilot": has_posture_pilot,
+            "multi_control": bool(args.multi_control),
+            "connected_clients": n_clients,
+            "can_drive": n_clients > 0 and (args.multi_control or has_posture_pilot),
+            "active_controller": controller,
             "vx": vx,
             "vy": vy,
             "vyaw": vyaw,
             "last_code": last_code,
             "last_op": last_op,
             "last_error": last_error,
+            "move_ok": move_ok,
+            "move_hint": move_hint,
         }
-        async with clients_lock:
-            dead: list[Any] = []
-            for c in clients:
-                try:
-                    await c.send(json.dumps(payload))
-                except Exception:
-                    dead.append(c)
-            for c in dead:
-                clients.discard(c)
+
+    async def _broadcast_status() -> None:
+        await _broadcast_payload(await _build_status_payload())
+
+    async def _broadcast_log(msg: str, *, level: str = "info") -> None:
+        payload = {"type": "log", "level": str(level), "msg": str(msg), "ts": time.time()}
+        print(f"[go2_control_ws][{level}] {msg}")
+        await _broadcast_payload(payload)
+
+    async def _broadcast_robot_error(op: str, code: int) -> None:
+        hint = _code_hint(code)
+        payload = {
+            "type": "robot_error",
+            "op": op,
+            "code": int(code),
+            "hint": hint,
+            "ts": time.time(),
+        }
+        print(f"[go2_control_ws][robot_error] {op}: code={code} hint={hint}")
+        await _broadcast_payload(payload)
 
     async def _sdk_call(fn: Any, *call_args: Any) -> Any:
         async with sdk_lock:
@@ -183,9 +244,19 @@ async def _amain(args: argparse.Namespace) -> None:
             if until > float(control_gate["until_ts"]):
                 control_gate["until_ts"] = until
 
+    async def _require_posture_pilot(ws: Any, typ: str) -> bool:
+        async with pilot_lock:
+            is_pilot = pilot["ws"] is ws
+        if is_pilot:
+            return True
+        await _broadcast_log(f"{typ}: rejected (claim posture pilot first)", level="warn")
+        await _ack(ws, str(typ), False, "not posture pilot — send claim_pilot first")
+        await _broadcast_status()
+        return False
+
     async def _run_posture_command(ws: Any, *, op_name: str, sdk_call: Any) -> None:
         await _broadcast_log(f"{op_name}: start", level="info")
-        await set_target(0.0, 0.0, 0.0)
+        await clear_all_targets()
         await _pause_control_loop(max(args.posture_guard_s, args.control_period * 2))
         stop_code = int(await _sdk_call(sport.StopMove))
         if stop_code != 0:
@@ -225,11 +296,12 @@ async def _amain(args: argparse.Namespace) -> None:
             await _broadcast_log(f"{op_name}: success", level="info")
         else:
             await _broadcast_log(f"{op_name}: failed code={code} hint={_code_hint(code)}", level="warn")
+            await _broadcast_robot_error(op_name, code)
         await _ack(ws, op_name, code == 0, f"code={code}, hint={_code_hint(code)}")
         await _broadcast_status()
 
     async def handler(ws: Any) -> None:
-        ra = getattr(ws, "remote_address", "?")
+        ra = _client_label(ws)
         print(f"[go2_control_ws] client connected: {ra}")
         async with clients_lock:
             clients.add(ws)
@@ -240,7 +312,8 @@ async def _amain(args: argparse.Namespace) -> None:
                 "type": "hello",
                 "iface": args.iface,
                 "bridge": "go2_control_ws_bridge",
-                "protocol": 1,
+                "protocol": 2,
+                "multi_control": bool(args.multi_control),
                 "commands": [
                     "claim_pilot",
                     "release_pilot",
@@ -254,6 +327,7 @@ async def _amain(args: argparse.Namespace) -> None:
                 ],
             },
         )
+        await _send_json(ws, await _build_status_payload())
 
         try:
             async for raw in ws:
@@ -278,12 +352,13 @@ async def _amain(args: argparse.Namespace) -> None:
                         },
                     )
                     continue
+
                 if typ == "claim_pilot":
                     async with pilot_lock:
                         current = pilot["ws"]
                         if current is not None and current is not ws:
                             await _broadcast_log("claim_pilot denied: already owned by another client", level="warn")
-                            await _ack(ws, "claim_pilot", False, "pilot already claimed by another client")
+                            await _ack(ws, "claim_pilot", False, "posture pilot already claimed")
                             await _broadcast_status()
                             continue
                     ok_mode, mode_msg = await _ensure_normal_mode()
@@ -298,12 +373,12 @@ async def _amain(args: argparse.Namespace) -> None:
                         continue
                     async with pilot_lock:
                         pilot["ws"] = ws
-                    await set_target(0.0, 0.0, 0.0)
-                    await _broadcast_log("pilot granted", level="info")
+                    await clear_client_target(ws)
+                    await _broadcast_log("posture pilot granted", level="info")
                     if mode_msg.startswith("WARNING:"):
-                        await _ack(ws, "claim_pilot", True, f"pilot granted ({mode_msg})")
+                        await _ack(ws, "claim_pilot", True, f"posture pilot granted ({mode_msg})")
                     else:
-                        await _ack(ws, "claim_pilot", True, "pilot granted")
+                        await _ack(ws, "claim_pilot", True, "posture pilot granted")
                     await _broadcast_status()
                     continue
 
@@ -311,24 +386,56 @@ async def _amain(args: argparse.Namespace) -> None:
                     async with pilot_lock:
                         if pilot["ws"] is ws:
                             pilot["ws"] = None
-                    await set_target(0.0, 0.0, 0.0)
-                    await _broadcast_log("pilot released", level="info")
+                    await clear_client_target(ws)
+                    await _broadcast_log("posture pilot released", level="info")
                     await _ack(ws, "release_pilot", True)
                     await _broadcast_status()
                     continue
 
+                # twist / stop: any connected client when multi_control (default).
+                if typ in ("twist", "stop") and args.multi_control:
+                    if typ == "stop":
+                        await clear_client_target(ws)
+                        code = int(await _sdk_call(sport.StopMove))
+                        async with runtime_lock:
+                            runtime["last_code"] = code
+                            runtime["last_op"] = "stop"
+                            runtime["last_error"] = "" if code == 0 else _code_hint(code)
+                        if code != 0:
+                            await _broadcast_robot_error("stop", code)
+                        await _ack(ws, "stop", code == 0, f"code={code}, hint={_code_hint(code)}")
+                        await _broadcast_status()
+                        continue
+
+                    vx = _safe_float(data.get("vx", 0.0))
+                    vy = _safe_float(data.get("vy", 0.0))
+                    vyaw = _safe_float(data.get("vyaw", 0.0))
+                    vx = max(-args.max_vx, min(args.max_vx, vx))
+                    vy = max(-args.max_vy, min(args.max_vy, vy))
+                    vyaw = max(-args.max_vyaw, min(args.max_vyaw, vyaw))
+                    await set_client_target(ws, vx, vy, vyaw)
+                    await _ack(ws, "twist", True, f"target=({vx:+.2f},{vy:+.2f},{vyaw:+.2f})")
+                    continue
+
+                # Legacy single-pilot mode or posture commands require pilot.
                 async with pilot_lock:
                     is_pilot = pilot["ws"] is ws
                 if not is_pilot:
-                    await _broadcast_log(f"{typ}: rejected (client is not pilot)", level="warn")
-                    await _ack(ws, str(typ), False, "not pilot")
+                    await _broadcast_log(f"{typ}: rejected (client is not posture pilot)", level="warn")
+                    await _ack(ws, str(typ), False, "not posture pilot")
                     continue
 
                 if typ == "stand_up":
+                    if not await _require_posture_pilot(ws, typ):
+                        continue
                     await _run_posture_command(ws, op_name="stand_up", sdk_call=sport.StandUp)
                 elif typ == "stand_down":
+                    if not await _require_posture_pilot(ws, typ):
+                        continue
                     await _run_posture_command(ws, op_name="stand_down", sdk_call=sport.StandDown)
                 elif typ == "normal_mode":
+                    if not await _require_posture_pilot(ws, typ):
+                        continue
                     ok_mode, mode_msg = await _ensure_normal_mode()
                     async with runtime_lock:
                         runtime["last_code"] = 0 if ok_mode else -1
@@ -337,20 +444,22 @@ async def _amain(args: argparse.Namespace) -> None:
                     await _ack(ws, "normal_mode", ok_mode, mode_msg)
                     await _broadcast_status()
                 elif typ == "balance_stand":
+                    if not await _require_posture_pilot(ws, typ):
+                        continue
                     await _run_posture_command(ws, op_name="balance_stand", sdk_call=sport.BalanceStand)
                 elif typ == "recovery_stand":
+                    if not await _require_posture_pilot(ws, typ):
+                        continue
                     await _run_posture_command(ws, op_name="recovery_stand", sdk_call=sport.RecoveryStand)
                 elif typ == "stop":
-                    await set_target(0.0, 0.0, 0.0)
+                    await clear_client_target(ws)
                     code = int(await _sdk_call(sport.StopMove))
                     async with runtime_lock:
                         runtime["last_code"] = code
                         runtime["last_op"] = "stop"
                         runtime["last_error"] = "" if code == 0 else _code_hint(code)
-                    if code == 0:
-                        await _broadcast_log("stop: success", level="info")
-                    else:
-                        await _broadcast_log(f"stop: failed code={code} hint={_code_hint(code)}", level="warn")
+                    if code != 0:
+                        await _broadcast_robot_error("stop", code)
                     await _ack(ws, "stop", code == 0, f"code={code}, hint={_code_hint(code)}")
                     await _broadcast_status()
                 elif typ == "twist":
@@ -360,15 +469,13 @@ async def _amain(args: argparse.Namespace) -> None:
                     vx = max(-args.max_vx, min(args.max_vx, vx))
                     vy = max(-args.max_vy, min(args.max_vy, vy))
                     vyaw = max(-args.max_vyaw, min(args.max_vyaw, vyaw))
-                    await set_target(vx, vy, vyaw)
+                    await set_client_target(ws, vx, vy, vyaw)
                     await _ack(ws, "twist", True, f"target=({vx:+.2f},{vy:+.2f},{vyaw:+.2f})")
                 else:
-                    # Do not fail the connection on schema drifts; keep socket alive.
                     await _broadcast_log(f"unknown command type: {typ}", level="warn")
                     await _send_json(ws, {"type": "error", "msg": f"unknown type: {typ}"})
                     continue
         except ConnectionClosed as exc:
-            # Expected on flaky links / browser refresh; avoid noisy traceback + 1011 loops.
             print(f"[go2_control_ws] client disconnected ({ra}): code={exc.code} reason={exc.reason!r}")
         finally:
             async with clients_lock:
@@ -376,7 +483,7 @@ async def _amain(args: argparse.Namespace) -> None:
             async with pilot_lock:
                 if pilot["ws"] is ws:
                     pilot["ws"] = None
-            await set_target(0.0, 0.0, 0.0)
+            await clear_client_target(ws)
             try:
                 await _sdk_call(sport.StopMove)
             except Exception:
@@ -386,32 +493,28 @@ async def _amain(args: argparse.Namespace) -> None:
             print(f"[go2_control_ws] client disconnected: {ra}")
 
     async def control_loop() -> None:
-        loop_state: dict[str, Any] = {"last_kind": "none", "last_stop_ts": 0.0}
+        loop_state: dict[str, Any] = {"last_kind": "none", "last_stop_ts": 0.0, "last_error_code": 0}
         while True:
             await asyncio.sleep(args.control_period)
             async with control_gate_lock:
                 if time.monotonic() < float(control_gate["until_ts"]):
                     continue
-            async with pilot_lock:
-                p = pilot["ws"]
-            if p is None:
+
+            async with clients_lock:
+                n_clients = len(clients)
+            if n_clients == 0:
                 continue
 
-            async with target_lock:
-                vx = float(target["vx"])
-                vy = float(target["vy"])
-                vyaw = float(target["vyaw"])
-                ts = float(target["ts"])
+            if not args.multi_control:
+                async with pilot_lock:
+                    if pilot["ws"] is None:
+                        continue
 
+            vx, vy, vyaw, _controller = await resolve_active_target()
             now = time.monotonic()
-            if now - ts > args.command_timeout:
-                vx = 0.0
-                vy = 0.0
-                vyaw = 0.0
 
             try:
                 if vx == 0.0 and vy == 0.0 and vyaw == 0.0:
-                    # Avoid spamming StopMove on every loop tick when already idle.
                     if (
                         loop_state["last_kind"] == "zero"
                         and now - float(loop_state["last_stop_ts"]) < args.idle_stop_period
@@ -425,19 +528,26 @@ async def _amain(args: argparse.Namespace) -> None:
                     code = int(await _sdk_call(sport.Move, vx, vy, vyaw))
                     op = "move_loop"
                     loop_state["last_kind"] = "move"
+
                 async with runtime_lock:
                     runtime["last_code"] = code
                     runtime["last_op"] = op
                     runtime["last_move_ts"] = time.monotonic()
                     runtime["last_error"] = "" if code == 0 else _code_hint(code)
-                if code != 0:
+
+                if code != 0 and code != loop_state.get("last_error_code"):
+                    loop_state["last_error_code"] = code
                     await _broadcast_log(f"{op}: code={code} hint={_code_hint(code)}", level="warn")
+                    await _broadcast_robot_error(op, code)
+                elif code == 0:
+                    loop_state["last_error_code"] = 0
             except Exception as exc:
                 async with runtime_lock:
                     runtime["last_code"] = -2
                     runtime["last_op"] = "move_exception"
                     runtime["last_error"] = str(exc)
                 await _broadcast_log(f"move loop exception: {exc}", level="warn")
+                await _broadcast_robot_error("move_exception", -2)
 
     async def stats_loop() -> None:
         while True:
@@ -448,7 +558,8 @@ async def _amain(args: argparse.Namespace) -> None:
         "ping_interval": args.ws_ping_interval if args.ws_ping_interval > 0 else None,
         "ping_timeout": args.ws_ping_timeout if args.ws_ping_timeout > 0 else None,
     }
-    print(f"[go2_control_ws] ws://{args.host}:{args.port} iface={args.iface}")
+    mode = "multi" if args.multi_control else "single-pilot"
+    print(f"[go2_control_ws] ws://{args.host}:{args.port} iface={args.iface} mode={mode}")
     try:
         async with websockets.serve(handler, args.host, args.port, **serve_kw):
             await asyncio.gather(control_loop(), stats_loop())
@@ -472,6 +583,12 @@ def main() -> None:
     p.add_argument("--max-vy", type=float, default=0.4, help="Clamp lateral speed m/s")
     p.add_argument("--max-vyaw", type=float, default=1.2, help="Clamp yaw speed rad/s")
     p.add_argument(
+        "--multi-control",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow any connected client to send twist/stop (last-writer-wins). Posture still needs claim_pilot.",
+    )
+    p.add_argument(
         "--posture-guard-s",
         type=float,
         default=1.2,
@@ -489,7 +606,12 @@ def main() -> None:
         default=False,
         help="Fail claim/commands if normal mode cannot be enforced (default: false).",
     )
-    p.add_argument("--ws-ping-interval", type=float, default=30.0, help="WS ping interval (s), <=0 to disable")
+    p.add_argument(
+        "--ws-ping-interval",
+        type=float,
+        default=0.0,
+        help="WS protocol ping interval (s), <=0 to disable (app-level ping still works).",
+    )
     p.add_argument("--ws-ping-timeout", type=float, default=60.0, help="WS ping timeout (s), <=0 to disable")
     p.add_argument(
         "--idle-stop-period",

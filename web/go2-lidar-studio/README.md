@@ -53,11 +53,26 @@ npm run dev
 python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --include-joints
 ```
 
-For voxel map visualization, add `--voxel --voxel-decompress` and enable mapping on the robot (Unitree app):
+For voxel map visualization, add `--voxel` and enable mapping recording in the Unitree app:
 
 ```bash
-python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel --voxel-decompress --include-joints
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel --include-joints
 ```
+
+Default map source is **`height_map_array`** (Unitree app mapping). For compressed voxel on EDU firmware:
+
+```bash
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel \
+  --voxel-map-source compressed --voxel-decompress --include-joints
+```
+
+**Map troubleshooting:** LiDAR OK but no map points → start **recording** in Unitree app (Function → 3D LiDAR Mapping → play), move robot 10–20s. Quick check:
+
+```bash
+./scripts/go2_voxel_probe.sh
+```
+
+Expected: `height_map probe: N frame(s)` with N > 0.
 
 4. In the app, set bridge URL (`ws://<ip-du-pi>:8765`) and click Connect. Enable **Show voxel map** in the Voxel map section when the bridge runs with `--voxel`.
 
@@ -96,14 +111,20 @@ python3 scripts/go2_control_ws_bridge.py --iface eth0 --port 8766
 Then in GO2 LiDAR Studio:
 - enable `Enable robot control feature`
 - set `Control WS URL` to `ws://<ip-du-pi>:8766`
-- use keyboard arrows or on-screen directional buttons
+- use keyboard arrows or on-screen directional buttons (WASD / arrows — **no pilot claim needed to drive**)
+- use **ClaimPosturePilot** only for StandUp / StandDown / posture buttons
 
 Troubleshooting:
 - if `python3 scripts/go2_control_ws_bridge.py ...` exits instantly, check missing module errors (typically `websockets`)
 - if the app is opened from another device, avoid `localhost` in `Control WS URL` (use the Pi IP or hostname)
 - two WebSocket connections on the same page are fine (`8765` LiDAR + `8766` control)
-- if bridge logs show `voxel DDS: 0 (+0 / 5s)` while LiDAR frames increase, enable **3D LiDAR Mapping** in the Unitree app (default topic is `rt/utlidar/voxel_map_compressed`, same namespace as LiDAR)
-- if voxel status stays at "metadata only", run the bridge with `--voxel-decompress` and ensure robot mapping is active
+- **`send ok` does not mean the robot moved** — watch the overlay line `move: OK` / `move: FAIL code=...` and logs `status op=move_loop` / `robot_error`. Zero `twist` spam in logs is normal when no key is held.
+- robot must be **standing** before drive commands work (`ClaimPosturePilot` → `StandUp`, or `go2ctl stand`). Common failure codes: `4202` (sport not ready / robot down), `7004` (motion switcher).
+- only one process should listen on `:8766` (`ss -ltnp | rg 8766`). Close the Unitree app / other controllers if move keeps failing.
+- multiple browser tabs can drive simultaneously (last-writer-wins on twist); posture commands still require posture pilot.
+- WS disconnects with `1011 keepalive ping timeout`: start bridge with `--ws-ping-interval 0` (default in `go2_stack_startup.sh` / `CONTROL_WS_PING_INTERVAL=0`)
+- if bridge logs show `map DDS (height_map): 0` while LiDAR frames increase, start mapping **recording** in the Unitree app (not only create a map)
+- if using `--voxel-map-source compressed` and status stays at "metadata only", add `--voxel-decompress` and ensure firmware publishes `voxel_map_compressed`
 
 ## Data contract expected
 
@@ -116,9 +137,9 @@ Point cloud messages:
 Voxel map messages (same WebSocket, separate type):
 - `type: "go2_voxel_map"`
 - `stamp`, `frame_id`, `resolution`, `origin`, `width`, `data_b64`
-- optional `occupied_points: [[x,y,z], ...]` when bridge runs with `--voxel-decompress`
+- optional `occupied_points: [[x,y,z], ...]` when bridge runs with `--voxel` (height_map default) or `--voxel-decompress` (compressed source)
 - optional `robot_state` block
 
-Hello message may include `voxel_enabled: true` and `voxel_topic` when `--voxel` is active.
+Hello message may include `voxel_enabled: true`, `voxel_map_source`, and `height_map_topic` / `voxel_topic` when `--voxel` is active.
 
 No breaking changes are required on existing LiDAR fields.

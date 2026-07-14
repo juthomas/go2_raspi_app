@@ -15,6 +15,12 @@ type AckMessage = {
 type StatusMessage = {
   type: "status";
   pilot?: boolean;
+  posture_pilot?: boolean;
+  can_drive?: boolean;
+  connected_clients?: number;
+  active_controller?: string | null;
+  move_ok?: boolean;
+  move_hint?: string;
   vx?: number;
   vy?: number;
   vyaw?: number;
@@ -35,6 +41,13 @@ type LogMessage = {
   ts?: number;
 };
 
+type RobotErrorMessage = {
+  type: "robot_error";
+  op?: string;
+  code?: number;
+  hint?: string;
+};
+
 type Handlers = {
   onOpen?: () => void;
   onClose?: (code: number, reason: string) => void;
@@ -42,6 +55,7 @@ type Handlers = {
   onHello?: (msg: HelloMessage) => void;
   onAck?: (msg: AckMessage) => void;
   onStatus?: (msg: StatusMessage) => void;
+  onRobotError?: (msg: RobotErrorMessage) => void;
   onServerError?: (msg: ErrorMessage) => void;
   onServerLog?: (msg: LogMessage) => void;
   onLatency?: (latencyMs: number | null) => void;
@@ -217,6 +231,10 @@ export class Go2ControlClient {
     }
     if (msg.type === "status") {
       this.handlers.onStatus?.(msg as StatusMessage);
+      return;
+    }
+    if (msg.type === "robot_error") {
+      this.handlers.onRobotError?.(msg as RobotErrorMessage);
       return;
     }
     if (msg.type === "error") {

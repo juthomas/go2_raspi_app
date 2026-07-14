@@ -43,9 +43,24 @@ type StoreState = {
   controlLatencyMs: number | null;
   controlBridgeText: string;
   controlPilot: boolean;
+  controlPosturePilot: boolean;
+  controlCanDrive: boolean;
   controlLastAck: string;
   controlLastError: string;
-  controlServerStatus: { lastOp: string; lastCode: number; pilot: boolean; vx: number; vy: number; vyaw: number } | null;
+  controlServerStatus: {
+    lastOp: string;
+    lastCode: number;
+    pilot: boolean;
+    posturePilot: boolean;
+    canDrive: boolean;
+    connectedClients: number;
+    activeController: string | null;
+    moveOk: boolean;
+    moveHint: string;
+    vx: number;
+    vy: number;
+    vyaw: number;
+  } | null;
   controlDebugLogs: string[];
   lastPayload: Go2PointCloudMessage | null;
   lastVoxelPayload: Go2VoxelMapMessage | null;
@@ -132,6 +147,8 @@ export function useGo2Store() {
     controlLatencyMs: null,
     controlBridgeText: "Control bridge: --",
     controlPilot: false,
+    controlPosturePilot: false,
+    controlCanDrive: false,
     controlLastAck: "--",
     controlLastError: "--",
     controlServerStatus: null,
@@ -217,6 +234,8 @@ export function useGo2Store() {
         controlStatus: "disconnected",
         controlStatusText: "Control WS disconnected",
         controlPilot: false,
+        controlPosturePilot: false,
+        controlCanDrive: false,
         controlDebugLogs: appendLog(prev.controlDebugLogs, "control feature disabled"),
       }));
     }
@@ -241,6 +260,7 @@ export function useGo2Store() {
             controlStatus: "connected",
             controlStatusText: "Control WS connected",
             controlLatencyMs: null,
+            controlCanDrive: true,
             controlLastError: "--",
             controlDebugLogs: appendLog(prev.controlDebugLogs, "socket open"),
           }));
@@ -252,6 +272,8 @@ export function useGo2Store() {
             controlStatusText: `Control WS closed (${code})`,
             controlLatencyMs: null,
             controlPilot: false,
+            controlPosturePilot: false,
+            controlCanDrive: false,
             controlLastError: reason || prev.controlLastError,
             controlDebugLogs: appendLog(prev.controlDebugLogs, `socket closed code=${code} reason=${reason || "--"}`),
           }));
@@ -283,19 +305,29 @@ export function useGo2Store() {
         },
         onAck: (msg) => {
           const text = `${msg.cmd ?? "?"}: ${msg.ok ? "ok" : "fail"}${msg.msg ? ` (${msg.msg})` : ""}`;
-          setState((prev) => ({
-            ...prev,
-            controlLastAck: text,
-            controlPilot: msg.cmd === "claim_pilot" ? Boolean(msg.ok) : prev.controlPilot,
-            controlStatusText:
-              msg.cmd === "claim_pilot"
-                ? msg.ok
-                  ? "Control WS pilot granted"
-                  : "Control WS pilot denied"
-                : prev.controlStatusText,
-            controlLastError: msg.ok ? prev.controlLastError : msg.msg ?? "command failed",
-            controlDebugLogs: appendLog(prev.controlDebugLogs, `ack ${text}`),
-          }));
+          setState((prev) => {
+            const isTwist = msg.cmd === "twist";
+            const isZeroTwist =
+              isTwist && typeof msg.msg === "string" && msg.msg.includes("target=(+0.00,+0.00,+0.00)");
+            const logs =
+              isTwist && isZeroTwist
+                ? prev.controlDebugLogs
+                : appendLog(prev.controlDebugLogs, `ack ${text}`);
+            return {
+              ...prev,
+              controlLastAck: text,
+              controlPosturePilot: msg.cmd === "claim_pilot" ? Boolean(msg.ok) : prev.controlPosturePilot,
+              controlPilot: msg.cmd === "claim_pilot" ? Boolean(msg.ok) : prev.controlPilot,
+              controlStatusText:
+                msg.cmd === "claim_pilot"
+                  ? msg.ok
+                    ? "Posture pilot granted (StandUp/Down)"
+                    : "Posture pilot denied"
+                  : prev.controlStatusText,
+              controlLastError: msg.ok ? prev.controlLastError : msg.msg ?? "command failed",
+              controlDebugLogs: logs,
+            };
+          });
         },
         onStatus: (msg) => {
           setState((prev) => {
@@ -303,6 +335,12 @@ export function useGo2Store() {
               lastOp: msg.last_op ?? "?",
               lastCode: Number(msg.last_code ?? 0),
               pilot: Boolean(msg.pilot),
+              posturePilot: Boolean(msg.posture_pilot ?? msg.pilot),
+              canDrive: Boolean(msg.can_drive ?? msg.connected_clients),
+              connectedClients: Number(msg.connected_clients ?? 0),
+              activeController: msg.active_controller ?? null,
+              moveOk: Boolean(msg.move_ok ?? msg.last_code === 0),
+              moveHint: String(msg.move_hint ?? msg.last_error ?? ""),
               vx: Number(msg.vx ?? 0),
               vy: Number(msg.vy ?? 0),
               vyaw: Number(msg.vyaw ?? 0),
@@ -312,21 +350,34 @@ export function useGo2Store() {
               !prevStatus ||
               prevStatus.lastOp !== nextStatus.lastOp ||
               prevStatus.lastCode !== nextStatus.lastCode ||
-              prevStatus.pilot !== nextStatus.pilot;
-            const logs = changed
-              ? appendLog(
-                  prev.controlDebugLogs,
-                  `status op=${nextStatus.lastOp} code=${nextStatus.lastCode} pilot=${nextStatus.pilot ? "yes" : "no"} target=(${nextStatus.vx.toFixed(2)},${nextStatus.vy.toFixed(2)},${nextStatus.vyaw.toFixed(2)})`,
-                )
-              : prev.controlDebugLogs;
+              prevStatus.moveOk !== nextStatus.moveOk ||
+              prevStatus.connectedClients !== nextStatus.connectedClients;
+            const logs =
+              changed && (nextStatus.lastCode !== 0 || nextStatus.lastOp.includes("move"))
+                ? appendLog(
+                    prev.controlDebugLogs,
+                    `status op=${nextStatus.lastOp} code=${nextStatus.lastCode} move=${nextStatus.moveOk ? "OK" : "FAIL"} target=(${nextStatus.vx.toFixed(2)},${nextStatus.vy.toFixed(2)},${nextStatus.vyaw.toFixed(2)})`,
+                  )
+                : prev.controlDebugLogs;
             return {
               ...prev,
               controlServerStatus: nextStatus,
-              controlPilot: nextStatus.pilot,
-              controlLastError: msg.last_error || prev.controlLastError,
+              controlPosturePilot: nextStatus.posturePilot,
+              controlPilot: nextStatus.posturePilot,
+              controlCanDrive: nextStatus.canDrive,
+              controlLastError:
+                nextStatus.lastCode !== 0 ? nextStatus.moveHint || prev.controlLastError : prev.controlLastError,
               controlDebugLogs: logs,
             };
           });
+        },
+        onRobotError: (msg) => {
+          const line = `robot_error op=${msg.op ?? "?"} code=${msg.code ?? "?"} hint=${msg.hint ?? "--"}`;
+          setState((prev) => ({
+            ...prev,
+            controlLastError: msg.hint ?? prev.controlLastError,
+            controlDebugLogs: appendLog(prev.controlDebugLogs, line),
+          }));
         },
         onServerError: (msg) => {
           setState((prev) => ({
@@ -372,19 +423,29 @@ export function useGo2Store() {
       controlStatusText: "Control WS disconnected",
       controlLatencyMs: null,
       controlPilot: false,
+      controlPosturePilot: false,
+      controlCanDrive: false,
       controlDebugLogs: appendLog(prev.controlDebugLogs, "disconnect request"),
     }));
   };
 
   const sendControlCommand = (payload: Record<string, unknown>) => {
     const ok = controlClient.send(payload);
-    setState((prev) => ({
-      ...prev,
-      controlDebugLogs: appendLog(
-        prev.controlDebugLogs,
-        `send ${ok ? "ok" : "fail"} ${JSON.stringify(payload)}`,
-      ),
-    }));
+    const typ = String(payload.type ?? "");
+    const isIdleTwist =
+      typ === "twist" &&
+      Number(payload.vx ?? 0) === 0 &&
+      Number(payload.vy ?? 0) === 0 &&
+      Number(payload.vyaw ?? 0) === 0;
+    if (!ok || typ !== "twist" || !isIdleTwist) {
+      setState((prev) => ({
+        ...prev,
+        controlDebugLogs: appendLog(
+          prev.controlDebugLogs,
+          ok ? `send ${typ} ${JSON.stringify(payload)}` : `send fail ${JSON.stringify(payload)}`,
+        ),
+      }));
+    }
     if (!ok) {
       setState((prev) => ({
         ...prev,

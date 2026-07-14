@@ -3,11 +3,25 @@ import { useEffect, useMemo, useState } from "react";
 type Props = {
   enabled: boolean;
   controlConnected: boolean;
-  controlPilot: boolean;
+  controlCanDrive: boolean;
+  controlPosturePilot: boolean;
   controlStatusText: string;
   lastAck: string;
   lastError: string;
-  serverStatus: { lastOp: string; lastCode: number; pilot: boolean; vx: number; vy: number; vyaw: number } | null;
+  serverStatus: {
+    lastOp: string;
+    lastCode: number;
+    pilot: boolean;
+    posturePilot: boolean;
+    canDrive: boolean;
+    connectedClients: number;
+    activeController: string | null;
+    moveOk: boolean;
+    moveHint: string;
+    vx: number;
+    vy: number;
+    vyaw: number;
+  } | null;
   debugLogs: string[];
   onClearLogs: () => void;
   onSend: (payload: Record<string, unknown>) => boolean;
@@ -27,7 +41,8 @@ function usePressedState(): [Pressed, (k: keyof Pressed, v: boolean) => void] {
 export function Go2ControlOverlay({
   enabled,
   controlConnected,
-  controlPilot,
+  controlCanDrive,
+  controlPosturePilot,
   controlStatusText,
   lastAck,
   lastError,
@@ -46,6 +61,15 @@ export function Go2ControlOverlay({
     const vyaw = (pressed.left ? 1 : 0) * speedVyaw + (pressed.right ? -1 : 0) * speedVyaw;
     return { vx, vy: 0, vyaw };
   }, [pressed, speedVx, speedVyaw]);
+
+  const moveLabel = useMemo(() => {
+    if (!controlConnected) return "move: WS disconnected";
+    if (!controlCanDrive) return "move: waiting for bridge status";
+    if (serverStatus?.moveOk === false || (serverStatus?.lastCode ?? 0) !== 0) {
+      return `move: FAIL code=${serverStatus?.lastCode ?? "?"} (${serverStatus?.moveHint || lastError})`;
+    }
+    return "move: OK";
+  }, [controlCanDrive, controlConnected, lastError, serverStatus]);
 
   useEffect(() => {
     if (!enabled) {
@@ -105,7 +129,7 @@ export function Go2ControlOverlay({
   }, [enabled, onSend, setPressed]);
 
   useEffect(() => {
-    if (!enabled || !controlConnected || !controlPilot) return;
+    if (!enabled || !controlConnected || !controlCanDrive) return;
     const timer = window.setInterval(() => {
       onSend({
         type: "twist",
@@ -115,7 +139,7 @@ export function Go2ControlOverlay({
       });
     }, 80);
     return () => window.clearInterval(timer);
-  }, [controlConnected, controlPilot, enabled, onSend, target]);
+  }, [controlCanDrive, controlConnected, enabled, onSend, target]);
 
   const copyLogs = async () => {
     const payload = debugLogs.length ? debugLogs.join("\n") : "[--] no logs yet";
@@ -186,18 +210,35 @@ export function Go2ControlOverlay({
         </button>
       </div>
       <div className="control-actions">
-        <button onClick={() => onSend({ type: "normal_mode" })}>NormalMode</button>
-        <button onClick={() => onSend({ type: "stand_up" })}>StandUp</button>
-        <button onClick={() => onSend({ type: "stand_down" })}>StandDown</button>
-        <button onClick={() => onSend({ type: "balance_stand" })}>BalanceStand</button>
-        <button onClick={() => onSend({ type: "recovery_stand" })}>RecoveryStand</button>
+        <button onClick={() => onSend({ type: "claim_pilot" })} title="Required for StandUp/Down only">
+          ClaimPosturePilot
+        </button>
+        <button onClick={() => onSend({ type: "normal_mode" })} disabled={!controlPosturePilot}>
+          NormalMode
+        </button>
+        <button onClick={() => onSend({ type: "stand_up" })} disabled={!controlPosturePilot}>
+          StandUp
+        </button>
+        <button onClick={() => onSend({ type: "stand_down" })} disabled={!controlPosturePilot}>
+          StandDown
+        </button>
+        <button onClick={() => onSend({ type: "balance_stand" })} disabled={!controlPosturePilot}>
+          BalanceStand
+        </button>
+        <button onClick={() => onSend({ type: "recovery_stand" })} disabled={!controlPosturePilot}>
+          RecoveryStand
+        </button>
         <button onClick={onClearLogs}>ClearLogs</button>
         <button onClick={() => void copyLogs()}>CopyLogs</button>
       </div>
       <div className="control-debug">
         <div>
-          conn: {controlConnected ? "yes" : "no"} pilot: {controlPilot ? "yes" : "no"} / srv:{" "}
-          {serverStatus?.pilot ? "yes" : "no"}
+          conn: {controlConnected ? "yes" : "no"} drive: {controlCanDrive ? "yes" : "no"} posture pilot:{" "}
+          {controlPosturePilot ? "yes" : "no"}
+        </div>
+        <div className={serverStatus?.moveOk === false ? "control-move-fail" : "control-move-ok"}>{moveLabel}</div>
+        <div>
+          clients: {serverStatus?.connectedClients ?? 0} active: {serverStatus?.activeController ?? "--"}
         </div>
         <div>target(local): vx={target.vx.toFixed(2)} vyaw={target.vyaw.toFixed(2)}</div>
         <div>
@@ -215,7 +256,9 @@ export function Go2ControlOverlay({
         </div>
         <div className="control-copy-status">{copyStatus || "\u00a0"}</div>
       </div>
-      <div className="control-hint">Keyboard: WASD or Arrow keys (hold), Space/X = Stop</div>
+      <div className="control-hint">
+        WASD/arrows = drive (no pilot needed). ClaimPosturePilot for StandUp/Down. Ignore send ok — watch move: OK/FAIL.
+      </div>
     </div>
   );
 }

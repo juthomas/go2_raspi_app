@@ -12,7 +12,8 @@ Dépendances :
 
 Exemple :
   python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765
-  python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --voxel --voxel-decompress
+  python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --voxel --include-joints
+  python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --voxel --voxel-map-source compressed --voxel-decompress
 
 Client WebSocket : se connecter à ws://<ip-du-pi>:8765
 Messages JSON : go2_pointcloud, go2_voxel_map (si --voxel), hello, pong.
@@ -21,6 +22,12 @@ Messages JSON : go2_pointcloud, go2_voxel_map (si --voxel), hello, pong.
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 import asyncio
 import base64
 import json
@@ -29,6 +36,27 @@ import struct
 import threading
 import time
 from typing import Any
+
+_DEBUG_LOG_PATH = "/home/pigeons/Documents/unitree/go2_raspi_app/.cursor/debug-9466d0.log"
+_DEBUG_SESSION = "9466d0"
+
+
+def _debug_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
+    # #region agent log
+    try:
+        payload = {
+            "sessionId": _DEBUG_SESSION,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
+    except Exception:
+        pass
+    # #endregion
 
 
 def _run_dds_thread(
@@ -43,9 +71,11 @@ def _run_dds_thread(
     low_topic: str,
     on_voxel: Any | None = None,
     voxel_topic: str | None = None,
+    on_height_map: Any | None = None,
+    height_map_topic: str | None = None,
 ) -> None:
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
-    from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, SportModeState_
+    from unitree_sdk2py.idl.unitree_go.msg.dds_ import HeightMap_, LowState_, SportModeState_
     from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_
 
     ChannelFactoryInitialize(0, iface)
@@ -60,11 +90,38 @@ def _run_dds_thread(
 
     _subs: list[Any] = [sub_lidar, sub_sport, sub_low]
     if on_voxel is not None and voxel_topic:
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import VoxelMapCompressed_
+        from _voxel_idl import load_voxel_map_compressed_type
 
+        VoxelMapCompressed_ = load_voxel_map_compressed_type()
+
+        # #region agent log
+        _debug_log(
+            "A",
+            "go2_lidar_ws_bridge.py:_run_dds_thread",
+            "voxel subscriber init",
+            {
+                "voxel_topic": voxel_topic,
+                "message_type": "VoxelMapCompressed_",
+                "topic_looks_compressed": voxel_topic.endswith("_compressed"),
+            },
+        )
+        # #endregion
         sub_voxel = ChannelSubscriber(voxel_topic, VoxelMapCompressed_)
         sub_voxel.Init(handler=on_voxel, queueLen=queue_len)
         _subs.append(sub_voxel)
+        # #region agent log
+        _debug_log(
+            "C",
+            "go2_lidar_ws_bridge.py:_run_dds_thread",
+            "voxel subscriber init ok",
+            {"voxel_topic": voxel_topic, "queue_len": queue_len},
+        )
+        # #endregion
+
+    if on_height_map is not None and height_map_topic:
+        sub_height = ChannelSubscriber(height_map_topic, HeightMap_)
+        sub_height.Init(handler=on_height_map, queueLen=queue_len)
+        _subs.append(sub_height)
 
     while True:
         time.sleep(3600.0)
@@ -198,6 +255,86 @@ def _extract_occupied_points(
     return out, None
 
 
+_HEIGHT_MAP_EMPTY_Z = 1_000_000_000.0
+
+
+def _is_valid_height_map_z(z: float) -> bool:
+    if not math.isfinite(z) or abs(z) < 1e-6:
+        return False
+    # Unitree uses 1e9 as unknown/empty cell marker.
+    if abs(z - _HEIGHT_MAP_EMPTY_Z) < 1.0 or z >= 1e6:
+        return False
+    return True
+
+
+def _extract_height_map_points(
+    msg: Any,
+    *,
+    max_points: int,
+) -> tuple[list[list[float]], str | None]:
+    grid_w = int(msg.width)
+    grid_h = int(msg.height)
+    if grid_w <= 0 or grid_h <= 0:
+        return [], "invalid width/height"
+
+    res = float(msg.resolution)
+    if not math.isfinite(res) or res <= 0:
+        return [], f"invalid resolution={msg.resolution}"
+
+    ox = float(msg.origin[0]) if len(msg.origin) > 0 else 0.0
+    oy = float(msg.origin[1]) if len(msg.origin) > 1 else 0.0
+    try:
+        data = [float(v) for v in msg.data]
+    except Exception as exc:
+        return [], f"height data: {exc}"
+
+    candidates: list[list[float]] = []
+    for iy in range(grid_h):
+        for ix in range(grid_w):
+            idx = grid_w * iy + ix
+            if idx >= len(data):
+                break
+            z = data[idx]
+            if not _is_valid_height_map_z(z):
+                continue
+            candidates.append([ox + ix * res, oy + iy * res, z])
+
+    if max_points > 0 and len(candidates) > max_points:
+        step = max(1, len(candidates) // max_points)
+        candidates = candidates[::step][:max_points]
+    return candidates, None
+
+
+def _pack_height_map_message(
+    msg: Any,
+    *,
+    max_points: int,
+    height_map_topic: str,
+) -> dict[str, Any]:
+    frame_id = _decode_voxel_frame_id(msg)
+    grid_w = int(msg.width)
+    grid_h = int(msg.height)
+    resolution = float(msg.resolution)
+    ox = float(msg.origin[0]) if len(msg.origin) > 0 else 0.0
+    oy = float(msg.origin[1]) if len(msg.origin) > 1 else 0.0
+
+    pts, err = _extract_height_map_points(msg, max_points=max_points)
+    payload: dict[str, Any] = {
+        "type": "go2_voxel_map",
+        "map_source": "height_map",
+        "height_map_topic": height_map_topic,
+        "stamp": float(msg.stamp),
+        "frame_id": frame_id,
+        "resolution": resolution,
+        "origin": [ox, oy, 0.0],
+        "width": [grid_w, grid_h, 1],
+        "decode_note": err,
+    }
+    if pts:
+        payload["occupied_points"] = pts
+    return payload
+
+
 def _pack_voxel_message(
     msg: Any,
     *,
@@ -217,6 +354,7 @@ def _pack_voxel_message(
 
     payload: dict[str, Any] = {
         "type": "go2_voxel_map",
+        "map_source": "compressed",
         "stamp": float(msg.stamp),
         "frame_id": frame_id,
         "resolution": resolution,
@@ -333,6 +471,10 @@ async def _amain(args: argparse.Namespace) -> None:
     count = {"n": 0}
     voxel_box: list[dict[str, Any] | None] = [None]
     voxel_count = {"n": 0}
+    height_map_count = {"n": 0}
+    compressed_map_count = {"n": 0}
+    use_height_map = args.voxel and args.voxel_map_source in ("height_map", "both")
+    use_compressed = args.voxel and args.voxel_map_source in ("compressed", "both")
     state_lock = threading.Lock()
     robot_state: dict[str, Any] = {
         "sport": None,
@@ -361,6 +503,18 @@ async def _amain(args: argparse.Namespace) -> None:
 
     def on_voxel(msg: Any) -> None:
         try:
+            # #region agent log
+            _debug_log(
+                "B",
+                "go2_lidar_ws_bridge.py:on_voxel",
+                "voxel dds callback",
+                {
+                    "stamp": float(getattr(msg, "stamp", 0.0)),
+                    "compressed_size": len(bytes(getattr(msg, "data", b"") or b"")),
+                    "src_size": int(getattr(msg, "src_size", 0)),
+                },
+            )
+            # #endregion
             packed = _pack_voxel_message(
                 msg,
                 decompress=args.voxel_decompress,
@@ -373,8 +527,35 @@ async def _amain(args: argparse.Namespace) -> None:
                 packed["robot_state"] = snap
             voxel_box[0] = packed
             voxel_count["n"] += 1
+            compressed_map_count["n"] += 1
         except Exception as exc:
+            # #region agent log
+            _debug_log(
+                "D",
+                "go2_lidar_ws_bridge.py:on_voxel",
+                "voxel pack failed",
+                {"error": str(exc)},
+            )
+            # #endregion
             voxel_box[0] = {"type": "error", "msg": f"voxel: {exc}"}
+
+    def on_height_map(msg: Any) -> None:
+        try:
+            packed = _pack_height_map_message(
+                msg,
+                max_points=args.voxel_max_points,
+                height_map_topic=args.height_map_topic,
+            )
+            packed["recv_mono"] = time.time()
+            with state_lock:
+                snap = _build_robot_state_snapshot(robot_state)
+            if snap is not None:
+                packed["robot_state"] = snap
+            voxel_box[0] = packed
+            voxel_count["n"] += 1
+            height_map_count["n"] += 1
+        except Exception as exc:
+            voxel_box[0] = {"type": "error", "msg": f"height_map: {exc}"}
 
     def on_sport(msg: Any) -> None:
         try:
@@ -405,10 +586,20 @@ async def _amain(args: argparse.Namespace) -> None:
                 on_low=on_low,
                 sport_topic=args.sport_topic,
                 low_topic=args.low_topic,
-                on_voxel=on_voxel if args.voxel else None,
-                voxel_topic=args.voxel_topic if args.voxel else None,
+                on_voxel=on_voxel if use_compressed else None,
+                voxel_topic=args.voxel_topic if use_compressed else None,
+                on_height_map=on_height_map if use_height_map else None,
+                height_map_topic=args.height_map_topic if use_height_map else None,
             )
         except Exception as exc:
+            # #region agent log
+            _debug_log(
+                "C",
+                "go2_lidar_ws_bridge.py:dds_thread",
+                "dds thread failed",
+                {"error": str(exc)},
+            )
+            # #endregion
             box[0] = {"type": "error", "msg": f"DDS init/subscribe: {exc}"}
 
     threading.Thread(target=dds_thread, name="dds-lidar", daemon=True).start()
@@ -441,7 +632,11 @@ async def _amain(args: argparse.Namespace) -> None:
             }
             if args.voxel:
                 hello["voxel_enabled"] = True
-                hello["voxel_topic"] = args.voxel_topic
+                hello["voxel_map_source"] = args.voxel_map_source
+                if use_height_map:
+                    hello["height_map_topic"] = args.height_map_topic
+                if use_compressed:
+                    hello["voxel_topic"] = args.voxel_topic
             await ws.send(json.dumps(hello))
             async for raw in ws:
                 try:
@@ -519,40 +714,97 @@ async def _amain(args: argparse.Namespace) -> None:
 
     prev_n = 0
     prev_voxel_n = 0
+    prev_height_map_n = 0
+    prev_compressed_map_n = 0
     voxel_started_at = time.monotonic()
     voxel_warned = False
 
     async def stats() -> None:
-        nonlocal prev_n, prev_voxel_n, voxel_warned
+        nonlocal prev_n, prev_voxel_n, prev_height_map_n, prev_compressed_map_n, voxel_warned
         while True:
             await asyncio.sleep(5.0)
             n = count["n"]
             vn = voxel_count["n"]
+            hn = height_map_count["n"]
+            cn = compressed_map_count["n"]
             async with clients_lock:
                 nc = len(clients)
             line = f"[go2_lidar_ws] frames DDS: {n} (+{n - prev_n} / 5s), clients WS: {nc}"
             if args.voxel:
-                line += f", voxel DDS: {vn} (+{vn - prev_voxel_n} / 5s)"
+                if use_height_map:
+                    line += f", map DDS (height_map): {hn} (+{hn - prev_height_map_n} / 5s)"
+                if use_compressed:
+                    line += f", map DDS (compressed): {cn} (+{cn - prev_compressed_map_n} / 5s)"
+                elif not use_height_map:
+                    line += f", map DDS: {vn} (+{vn - prev_voxel_n} / 5s)"
             print(line)
+            if use_height_map and use_compressed:
+                no_map_frames = hn == 0 and cn == 0
+            elif use_height_map:
+                no_map_frames = hn == 0
+            else:
+                no_map_frames = cn == 0
             if (
                 args.voxel
                 and not voxel_warned
-                and vn == 0
+                and no_map_frames
                 and time.monotonic() - voxel_started_at >= 10.0
             ):
                 voxel_warned = True
-                print(
-                    f"[go2_lidar_ws] WARN: aucune frame voxel sur {args.voxel_topic} — "
-                    "activer le mapping Unitree (app 3D LiDAR Mapping) ou essayer "
-                    "--voxel-topic rt/utlidar/voxel_map"
+                if use_height_map:
+                    print(
+                        "[go2_lidar_ws] WARN: aucune frame height_map — le robot ne publie pas la carte (LiDAR OK). "
+                        "1) Unitree app: Function → 3D LiDAR Mapping → démarrer l'enregistrement (pas seulement créer la map). "
+                        "2) Bouger le robot 10–20 s. "
+                        f"3) Tester: ./scripts/go2_voxel_probe.sh  Topic: {args.height_map_topic}"
+                    )
+                else:
+                    print(
+                        f"[go2_lidar_ws] WARN: aucune frame voxel sur {args.voxel_topic} — "
+                        "essayer --voxel-map-source height_map si le mapping app Unitree est actif. "
+                        "Tester: ./scripts/go2_voxel_probe.sh MAP_SOURCE=compressed"
+                    )
+                # #region agent log
+                _debug_log(
+                    "B",
+                    "go2_lidar_ws_bridge.py:stats",
+                    "no map frames after 10s",
+                    {
+                        "voxel_map_source": args.voxel_map_source,
+                        "height_map_topic": args.height_map_topic,
+                        "voxel_topic": args.voxel_topic,
+                        "lidar_frames": n,
+                        "ws_clients": nc,
+                    },
                 )
+                # #endregion
             prev_n = n
             prev_voxel_n = vn
+            prev_height_map_n = hn
+            prev_compressed_map_n = cn
 
     host = args.host
     port = args.port
-    voxel_note = f" voxel={args.voxel_topic}" if args.voxel else ""
-    print(f"[go2_lidar_ws] ws://{host}:{port}  topic={args.topic}{voxel_note} iface={args.iface}")
+    map_note = ""
+    if args.voxel:
+        if use_height_map:
+            map_note += f" height_map={args.height_map_topic}"
+        if use_compressed:
+            map_note += f" voxel={args.voxel_topic}"
+    print(f"[go2_lidar_ws] ws://{host}:{port}  topic={args.topic}{map_note} iface={args.iface}")
+    if use_compressed and not args.voxel_topic.endswith("_compressed"):
+        print(
+            f"[go2_lidar_ws] WARN: --voxel-topic={args.voxel_topic} n'est pas un topic "
+            "VoxelMapCompressed (attendu: rt/utlidar/voxel_map_compressed)"
+        )
+        # #region agent log
+        _debug_log(
+            "A",
+            "go2_lidar_ws_bridge.py:_amain",
+            "voxel topic type mismatch warning",
+            {"voxel_topic": args.voxel_topic},
+        )
+        # #endregion
 
     ping_interval: float | None = args.ws_ping_interval if args.ws_ping_interval > 0 else None
     ping_timeout: float | None = args.ws_ping_timeout if args.ws_ping_timeout > 0 else None
@@ -620,12 +872,23 @@ def main() -> None:
     p.add_argument(
         "--voxel",
         action="store_true",
-        help="Souscrire rt/utlidar/voxel_map_compressed et diffuser go2_voxel_map sur le meme WS.",
+        help="Diffuser go2_voxel_map sur le meme WS (source par defaut: height_map).",
+    )
+    p.add_argument(
+        "--voxel-map-source",
+        choices=("height_map", "compressed", "both"),
+        default="height_map",
+        help="Source carte: height_map (app Unitree), compressed (voxel_map_compressed), both.",
+    )
+    p.add_argument(
+        "--height-map-topic",
+        default="rt/utlidar/height_map_array",
+        help="Topic DDS HeightMap (mapping app Unitree).",
     )
     p.add_argument(
         "--voxel-topic",
         default="rt/utlidar/voxel_map_compressed",
-        help="Topic DDS VoxelMapCompressed (carte voxel Unitree, namespace utlidar).",
+        help="Topic DDS VoxelMapCompressed (certains firmwares EDU).",
     )
     p.add_argument(
         "--voxel-rate-hz",

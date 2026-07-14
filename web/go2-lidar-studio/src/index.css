@@ -281,6 +281,16 @@ main {
   min-height: 1em;
 }
 
+.control-move-ok {
+  color: #6ee7a0;
+  font-weight: 600;
+}
+
+.control-move-fail {
+  color: #ff8a8a;
+  font-weight: 600;
+}
+
 .fps-header {
   font-size: 0.78rem;
   color: #cae9ff;

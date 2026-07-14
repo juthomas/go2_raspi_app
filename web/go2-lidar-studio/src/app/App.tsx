@@ -162,7 +162,8 @@ export function App() {
         <Go2ControlOverlay
           enabled={state.settings.controlEnabled}
           controlConnected={state.controlStatus === "connected"}
-          controlPilot={state.controlPilot}
+          controlCanDrive={state.controlCanDrive || state.controlStatus === "connected"}
+          controlPosturePilot={state.controlPosturePilot}
           controlStatusText={state.controlStatusText}
           lastAck={state.controlLastAck}
           lastError={state.controlLastError}

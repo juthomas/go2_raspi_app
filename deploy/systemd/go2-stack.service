@@ -1,0 +1,16 @@
+[Unit]
+Description=GO2 LiDAR + control WebSocket stack
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pigeons
+WorkingDirectory=/home/pigeons/Documents/unitree/go2_raspi_app
+EnvironmentFile=-/etc/default/go2-stack
+ExecStart=/home/pigeons/Documents/unitree/go2_raspi_app/scripts/go2_stack_startup.sh
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

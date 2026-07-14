@@ -138,22 +138,100 @@ Options utiles :
 - `--max-points 4000` / `--stride 2` — réduire la charge réseau (perte de frames acceptable).
 - `--rate-hz 15` — limite l’envoi côté WebSocket.
 - `--include-raw-b64` — inclut le buffer `PointCloud2` brut (plus lourd).
-- `--voxel` — souscrit aussi à `rt/utlidar/voxel_map_compressed` et diffuse `go2_voxel_map` sur le **même** WebSocket (port 8765).
-- `--voxel-decompress` — décompresse LZ4 côté Pi et inclut `occupied_points` (nécessite `pip install lz4`, inclus dans `.[lidar-ws]`).
-- `--voxel-rate-hz 1` — limite l’envoi de la carte voxel (défaut 1 Hz).
-- `--voxel-topic rt/utlidar/voxel_map_compressed` — topic par défaut (même namespace `utlidar` que le LiDAR).
+- `--voxel` — diffuse `go2_voxel_map` sur le **même** WebSocket (port 8765). Source par défaut : **`height_map`** (`rt/utlidar/height_map_array`, mapping app Unitree).
+- `--voxel-map-source height_map|compressed|both` — `height_map` (défaut), `compressed` (`voxel_map_compressed` + LZ4), ou les deux.
+- `--height-map-topic rt/utlidar/height_map_array` — topic HeightMap (SDK officiel).
+- `--voxel-decompress` — pour source `compressed` : décompresse LZ4 et inclut `occupied_points` (pip install lz4).
+- `--voxel-rate-hz 1` — limite l’envoi de la carte (défaut 1 Hz).
+- `--voxel-topic rt/utlidar/voxel_map_compressed` — topic VoxelMapCompressed (certains firmwares EDU).
 
-Exemple avec carte voxel (visualisation dans go2-lidar-studio) :
+Exemple avec carte (visualisation dans go2-lidar-studio, mapping app Unitree) :
 
 ```bash
-python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel --voxel-decompress --include-joints
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel --include-joints
 ```
 
-Prérequis voxel : LiDAR intégré (`utlidar`) actif et service de mapping Unitree en marche (app « 3D LiDAR Mapping » ou navigation autonome). Sans mapping actif, aucun message `go2_voxel_map` n’est émis.
+Prérequis : LiDAR actif + **enregistrement mapping** dans l’app Unitree Go (Function → 3D LiDAR Mapping → play). Sans mapping actif, aucun `go2_voxel_map`.
 
-Dépannage voxel : si les logs affichent `voxel DDS: 0 (+0 / 5s)` pendant que le LiDAR monte (~+75/5s), le robot ne publie pas encore la carte. Vérifier que le mapping est actif dans l’app Unitree. Le bridge affiche un WARN après 10 s sans frame voxel. Topic alternatif : `--voxel-topic rt/utlidar/voxel_map`.
+### Dépannage carte (voxel / height_map)
+
+Sur la plupart des GO2 avec l’app Unitree, la carte est publiée sur **`rt/utlidar/height_map_array`** (~15 Hz), pas sur `voxel_map_compressed`.
+
+**Créer une map ≠ démarrer le mapping.** Dans l’app Unitree Go :
+
+1. Function → **3D LiDAR Mapping** → ouvrir ou créer une map
+2. **Démarrer l’enregistrement** (play) — pas seulement nommer la map
+3. **Bouger le robot** 10–20 s ; la carte 3D doit se remplir dans l’app
+
+**Probe rapide** :
+
+```bash
+source .venv/bin/activate
+./scripts/go2_voxel_probe.sh
+# attendu: height_map probe: N frame(s) avec N > 0
+SKIP_MAPPING_CMD=1 ./scripts/go2_voxel_probe.sh   # si mapping déjà actif dans l'app
+MAP_SOURCE=compressed ./scripts/go2_voxel_probe.sh   # tester voxel_map_compressed
+```
+
+**Bridge** :
+
+```bash
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel --include-joints
+```
+
+Succès : `map DDS (height_map): +N / 5s`. LiDAR Studio : **Show voxel map** → `Voxel: N pts`.
+
+**Firmware EDU / voxel compressé** :
+
+```bash
+python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel \
+  --voxel-map-source compressed --voxel-decompress --include-joints
+```
 
 Chaque message JSON contient notamment `stamp.sec` / `stamp.nanosec` (horodatage ROS du nuage), `points: [[x,y,z], ...]`, et `recv_mono` (temps monotonic côté Pi à la réception) pour corrélation avec l’audio enregistré dans ton app. Les messages voxel (`type: "go2_voxel_map"`) arrivent séparément du nuage LiDAR.
+
+### Autostart au boot (systemd) — LiDAR + contrôle
+
+Démarrage automatique côté **Raspberry Pi** (pas dans le firmware du robot) :
+
+1. Attente réseau + ping du robot (`192.168.123.161` par défaut)
+2. Mode normal DDS + `rt/utlidar/switch ON` + tentatives `rt/utlidar/mapping_cmd` (best-effort)
+3. Pont **contrôle** WebSocket `:8766` + pont **LiDAR** `:8765` (`--voxel --include-joints`, source height_map par défaut)
+
+**Prérequis** : robot allumé et debout (~2 min après boot), connexion `go2-eth0` autoconnect, venv avec deps :
+
+```bash
+source .venv/bin/activate
+pip install -e ".[lidar-ws,control-ws]"
+pip install -e /path/to/unitree_sdk2_python
+```
+
+**Test manuel** (sans systemd) :
+
+```bash
+./scripts/go2_stack_startup.sh
+# ou préparation seule :
+.venv/bin/python scripts/go2_prepare_robot.py --iface eth0
+# health check :
+./scripts/go2_stack_health_check.sh
+```
+
+**Installation systemd** :
+
+```bash
+sudo cp deploy/systemd/go2-stack.service /etc/systemd/system/
+sudo cp deploy/go2-stack.env.example /etc/default/go2-stack
+# éditer /etc/default/go2-stack si besoin (IFACE, chemins, ports)
+sudo systemctl daemon-reload
+sudo systemctl enable --now go2-stack
+sudo journalctl -u go2-stack -f
+```
+
+Variables utiles dans `/etc/default/go2-stack` (voir `deploy/go2-stack.env.example`) : `IFACE`, `ROBOT_IP`, `MAPPING_CMDS`, `LIDAR_WS_PORT`, `CONTROL_WS_PORT`.
+
+**Limitation carte** : le nuage LiDAR démarre de façon fiable ; `go2_voxel_map` dépend du mapping Unitree (app → `height_map_array` par défaut). Active **3D LiDAR Mapping** + enregistrement dans l’app — le stack utilise `--voxel-map-source height_map` par défaut.
+
+**Fichiers** : `scripts/go2_prepare_robot.py`, `scripts/go2_stack_startup.sh`, `scripts/go2_stack_health_check.sh`, `deploy/systemd/go2-stack.service`.
 
 ### systema8os.xt (UI audio 3D + LiDAR GO2)
 
@@ -309,3 +387,15 @@ Et vérifie que le port n'est pas déjà occupé:
 ```bash
 ss -ltnp | rg ':8766'
 ```
+
+### Dépannage contrôle WebSocket (LiDAR Studio)
+
+Dans l'overlay contrôle, **`send ok` / `ack twist` ne prouvent pas** que le robot bouge : ils indiquent seulement que la commande a été reçue par le bridge. Le vrai mouvement passe par `sport.Move` dans la boucle `move_loop` du bridge.
+
+1. **Robot debout** — `StandUp` via l'overlay (bouton **ClaimPosturePilot** puis **StandUp**) ou `go2ctl stand`.
+2. **Un seul processus sur `:8766`** — `ss -ltnp | rg 8766`.
+3. **Pas d'app Unitree / télécommande** en parallèle (bloque le mode sport).
+4. Lire **`move: OK` / `move: FAIL code=...`** dans l'overlay (pas `send ok`). Les échecs remontent aussi via `robot_error` et `status move_loop`.
+5. Logs serveur : `journalctl -u go2-stack -f` ou stdout du bridge (`move_loop: code=...`). Codes fréquents : `4202` (sport non initialisé / robot couché), `7004` (motion_switcher indisponible).
+6. **Multi-clients** : tout client connecté peut envoyer `twist` (last-writer-wins). Les postures (`stand_up`, etc.) exigent **ClaimPosturePilot**.
+7. Déconnexions **`1011 keepalive ping timeout`** : le stack démarre avec `--ws-ping-interval 0` (`CONTROL_WS_PING_INTERVAL=0` dans `/etc/default/go2-stack`). Le client envoie un ping applicatif `{type:"ping"}` toutes les 2 s.
