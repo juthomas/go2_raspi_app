@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Go2PointCloudMessage, Go2RobotState } from "../types/go2";
+import type { Go2PointCloudMessage, Go2RobotState, Go2VoxelMapMessage } from "../types/go2";
 import { Go2BridgeClient } from "../ws/go2BridgeClient";
 import { Go2ControlClient } from "../ws/go2ControlClient";
 
@@ -29,6 +29,9 @@ export type UiSettings = {
   showGrid: boolean;
   showAxes: boolean;
   followRobot: boolean;
+  showVoxel: boolean;
+  voxelColor: string;
+  voxelMaxPoints: number;
 };
 
 type StoreState = {
@@ -45,6 +48,8 @@ type StoreState = {
   controlServerStatus: { lastOp: string; lastCode: number; pilot: boolean; vx: number; vy: number; vyaw: number } | null;
   controlDebugLogs: string[];
   lastPayload: Go2PointCloudMessage | null;
+  lastVoxelPayload: Go2VoxelMapMessage | null;
+  voxelStatusText: string;
   robotState: Go2RobotState | null;
   settings: UiSettings;
 };
@@ -82,6 +87,9 @@ const DEFAULT_SETTINGS: UiSettings = {
   showGrid: true,
   showAxes: true,
   followRobot: false,
+  showVoxel: false,
+  voxelColor: "#8888ff",
+  voxelMaxPoints: 30000,
 };
 
 function loadSettings(): UiSettings {
@@ -129,6 +137,8 @@ export function useGo2Store() {
     controlServerStatus: null,
     controlDebugLogs: [],
     lastPayload: null,
+    lastVoxelPayload: null,
+    voxelStatusText: "Voxel: --",
     robotState: null,
     settings: loadSettings(),
   }));
@@ -152,9 +162,10 @@ export function useGo2Store() {
         },
         onHello: (msg) => {
           if (msg.type !== "hello") return;
+          const voxelHint = msg.voxel_enabled ? ` | voxel: ${msg.voxel_topic ?? "on"}` : "";
           setState((prev) => ({
             ...prev,
-            statusText: `Bridge topic: ${msg.topic}`,
+            statusText: `Bridge topic: ${msg.topic}${voxelHint}`,
           }));
         },
         onPointCloud: (msg) => {
@@ -162,6 +173,20 @@ export function useGo2Store() {
             ...prev,
             lastPayload: msg,
             robotState: msg.robot_state ?? prev.robotState,
+          }));
+        },
+        onVoxelMap: (msg) => {
+          const n = Array.isArray(msg.occupied_points) ? msg.occupied_points.length : 0;
+          const res = typeof msg.resolution === "number" ? msg.resolution.toFixed(2) : "?";
+          const note = msg.decode_note ? ` (${msg.decode_note})` : "";
+          setState((prev) => ({
+            ...prev,
+            lastVoxelPayload: msg,
+            robotState: msg.robot_state ?? prev.robotState,
+            voxelStatusText:
+              n > 0
+                ? `Voxel: ${n.toLocaleString()} pts, res ${res}m`
+                : `Voxel: metadata only${note}`,
           }));
         },
         onLatency: (latencyMs) => {

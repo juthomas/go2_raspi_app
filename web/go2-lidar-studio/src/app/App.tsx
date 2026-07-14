@@ -138,6 +138,7 @@ export function App() {
           controlBridgeText={state.controlBridgeText}
           settings={state.settings}
           robotState={state.robotState}
+          voxelStatusText={state.voxelStatusText}
           onConnect={actions.connect}
           onDisconnect={actions.disconnect}
           onControlConnect={actions.connectControl}
@@ -147,7 +148,12 @@ export function App() {
       </aside>
 
       <main>
-        <SceneCanvas payload={state.lastPayload} robotState={state.robotState} settings={state.settings} />
+        <SceneCanvas
+          payload={state.lastPayload}
+          voxelPayload={state.lastVoxelPayload}
+          robotState={state.robotState}
+          settings={state.settings}
+        />
         <Go2WebRtcVideo
           enabled={state.settings.webrtcVideoEnabled}
           baseUrl={state.settings.webrtcVideoUrl}
@@ -213,7 +219,7 @@ export function App() {
             ))}
           </div>
           <div className="latency-row-label">
-            <span><i className="legend-dot webrtc" />WebRTC</span>
+            <span><i className="legend-dot webrtc" />Video WebRTC</span>
             <span>{displayLatency(webrtcRttMs)}</span>
           </div>
           <div className="latency-row">

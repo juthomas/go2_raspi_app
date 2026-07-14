@@ -8,12 +8,14 @@ vers une autre application sur la même machine (ws://127.0.0.1:PORT) ou sur le 
 Dépendances :
   pip install websockets cyclonedds
   + unitree_sdk2py (repo Unitree, install editable)
+  + lz4 (optionnel, pour --voxel-decompress)
 
 Exemple :
   python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765
+  python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --voxel --voxel-decompress
 
 Client WebSocket : se connecter à ws://<ip-du-pi>:8765
-Chaque message texte est un JSON avec type \"go2_pointcloud\", stamp, frame_id, points [[x,y,z],...].
+Messages JSON : go2_pointcloud, go2_voxel_map (si --voxel), hello, pong.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ def _run_dds_thread(
     on_low: Any,
     sport_topic: str,
     low_topic: str,
+    on_voxel: Any | None = None,
+    voxel_topic: str | None = None,
 ) -> None:
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, SportModeState_
@@ -54,8 +58,14 @@ def _run_dds_thread(
     sub_low = ChannelSubscriber(low_topic, LowState_)
     sub_low.Init(handler=on_low, queueLen=queue_len)
 
-    # Keep subscribers strongly referenced for the process lifetime.
-    _subs = [sub_lidar, sub_sport, sub_low]
+    _subs: list[Any] = [sub_lidar, sub_sport, sub_low]
+    if on_voxel is not None and voxel_topic:
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import VoxelMapCompressed_
+
+        sub_voxel = ChannelSubscriber(voxel_topic, VoxelMapCompressed_)
+        sub_voxel.Init(handler=on_voxel, queueLen=queue_len)
+        _subs.append(sub_voxel)
+
     while True:
         time.sleep(3600.0)
 
@@ -145,6 +155,115 @@ def _pack_message(
     return payload
 
 
+def _decode_voxel_frame_id(msg: Any) -> str:
+    frame_id = getattr(msg, "frame_id", "") or ""
+    if isinstance(frame_id, bytes):
+        frame_id = frame_id.decode("utf-8", errors="ignore")
+    return str(frame_id).split("\x00", 1)[0].strip()
+
+
+def _extract_occupied_points(
+    raw: bytes,
+    *,
+    origin: list[float],
+    width: list[int],
+    resolution: float,
+    max_points: int,
+) -> tuple[list[list[float]], str | None]:
+    nx, ny, nz = (max(0, int(v)) for v in width)
+    expected = nx * ny * nz
+    if expected <= 0:
+        return [], "invalid width dimensions"
+    if len(raw) < expected:
+        return [], f"raw size {len(raw)} < expected {expected}"
+
+    res = float(resolution)
+    if not math.isfinite(res) or res <= 0:
+        return [], f"invalid resolution={resolution}"
+
+    ox, oy, oz = (float(origin[i]) if i < len(origin) else 0.0 for i in range(3))
+    cap = max_points if max_points > 0 else expected
+    out: list[list[float]] = []
+    idx = 0
+    for iz in range(nz):
+        for iy in range(ny):
+            for ix in range(nx):
+                if raw[idx] == 0:
+                    idx += 1
+                    continue
+                out.append([ox + ix * res, oy + iy * res, oz + iz * res])
+                idx += 1
+                if len(out) >= cap:
+                    return out, None
+    return out, None
+
+
+def _pack_voxel_message(
+    msg: Any,
+    *,
+    decompress: bool,
+    max_points: int,
+) -> dict[str, Any]:
+    frame_id = _decode_voxel_frame_id(msg)
+    origin = [float(v) for v in msg.origin]
+    width = [int(v) for v in msg.width]
+    resolution = float(msg.resolution)
+    src_size = int(msg.src_size)
+
+    try:
+        compressed = bytes(msg.data)
+    except Exception as exc:
+        compressed = b""
+
+    payload: dict[str, Any] = {
+        "type": "go2_voxel_map",
+        "stamp": float(msg.stamp),
+        "frame_id": frame_id,
+        "resolution": resolution,
+        "origin": origin,
+        "width": width,
+        "src_size": src_size,
+        "compressed_size": len(compressed),
+        "data_b64": base64.b64encode(compressed).decode("ascii") if compressed else "",
+        "decode_note": None,
+    }
+
+    if not decompress:
+        return payload
+
+    if not compressed:
+        payload["decode_note"] = "empty compressed data"
+        return payload
+    if src_size <= 0:
+        payload["decode_note"] = "invalid src_size"
+        return payload
+
+    try:
+        import lz4.block
+    except ImportError:
+        payload["decode_note"] = "lz4 not installed (pip install lz4)"
+        return payload
+
+    try:
+        raw = lz4.block.decompress(compressed, uncompressed_size=src_size)
+    except Exception as exc:
+        payload["decode_note"] = f"lz4 decompress: {exc}"
+        return payload
+
+    pts, err = _extract_occupied_points(
+        raw,
+        origin=origin,
+        width=width,
+        resolution=resolution,
+        max_points=max_points,
+    )
+    if err:
+        payload["decode_note"] = err
+    else:
+        payload["occupied_points"] = pts
+    return payload
+
+
 def _extract_sport_state(msg: Any) -> dict[str, Any]:
     return {
         "mode": int(msg.mode),
@@ -191,6 +310,18 @@ def _build_robot_state_snapshot(state: dict[str, Any]) -> dict[str, Any] | None:
     return out
 
 
+async def _broadcast_json(clients: set[Any], clients_lock: asyncio.Lock, text: str) -> None:
+    async with clients_lock:
+        dead: list[Any] = []
+        for c in clients:
+            try:
+                await c.send(text)
+            except Exception:
+                dead.append(c)
+        for c in dead:
+            clients.discard(c)
+
+
 async def _amain(args: argparse.Namespace) -> None:
     try:
         import websockets
@@ -200,6 +331,8 @@ async def _amain(args: argparse.Namespace) -> None:
 
     box: list[dict[str, Any] | None] = [None]
     count = {"n": 0}
+    voxel_box: list[dict[str, Any] | None] = [None]
+    voxel_count = {"n": 0}
     state_lock = threading.Lock()
     robot_state: dict[str, Any] = {
         "sport": None,
@@ -225,6 +358,23 @@ async def _amain(args: argparse.Namespace) -> None:
             count["n"] += 1
         except Exception as exc:
             box[0] = {"type": "error", "msg": str(exc)}
+
+    def on_voxel(msg: Any) -> None:
+        try:
+            packed = _pack_voxel_message(
+                msg,
+                decompress=args.voxel_decompress,
+                max_points=args.voxel_max_points,
+            )
+            packed["recv_mono"] = time.time()
+            with state_lock:
+                snap = _build_robot_state_snapshot(robot_state)
+            if snap is not None:
+                packed["robot_state"] = snap
+            voxel_box[0] = packed
+            voxel_count["n"] += 1
+        except Exception as exc:
+            voxel_box[0] = {"type": "error", "msg": f"voxel: {exc}"}
 
     def on_sport(msg: Any) -> None:
         try:
@@ -255,6 +405,8 @@ async def _amain(args: argparse.Namespace) -> None:
                 on_low=on_low,
                 sport_topic=args.sport_topic,
                 low_topic=args.low_topic,
+                on_voxel=on_voxel if args.voxel else None,
+                voxel_topic=args.voxel_topic if args.voxel else None,
             )
         except Exception as exc:
             box[0] = {"type": "error", "msg": f"DDS init/subscribe: {exc}"}
@@ -280,17 +432,17 @@ async def _amain(args: argparse.Namespace) -> None:
         print(f"[go2_lidar_ws] client connecte: {ra}")
         await register(ws)
         try:
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "hello",
-                        "topic": args.topic,
-                        "sport_topic": args.sport_topic,
-                        "low_topic": args.low_topic,
-                        "iface": args.iface,
-                    }
-                )
-            )
+            hello: dict[str, Any] = {
+                "type": "hello",
+                "topic": args.topic,
+                "sport_topic": args.sport_topic,
+                "low_topic": args.low_topic,
+                "iface": args.iface,
+            }
+            if args.voxel:
+                hello["voxel_enabled"] = True
+                hello["voxel_topic"] = args.voxel_topic
+            await ws.send(json.dumps(hello))
             async for raw in ws:
                 try:
                     data = json.loads(raw)
@@ -310,7 +462,6 @@ async def _amain(args: argparse.Namespace) -> None:
                         )
                     )
         except ConnectionClosed as exc:
-            # Normal enough on flaky Wi-Fi/mobile clients: avoid noisy traceback.
             print(f"[go2_lidar_ws] client deconnecte ({ra}): code={exc.code} reason={exc.reason!r}")
         finally:
             await unregister(ws)
@@ -326,8 +477,6 @@ async def _amain(args: argparse.Namespace) -> None:
             if snap is None:
                 continue
             current_n = count["n"]
-            # Do not rebroadcast the exact same LiDAR frame over and over.
-            # Repeating stale payloads creates WS backlog and inflates app-level RTT.
             if current_n <= last_broadcast_n:
                 continue
             if args.rate_hz > 0:
@@ -336,35 +485,61 @@ async def _amain(args: argparse.Namespace) -> None:
                 if now - last_sent_t < min_dt:
                     continue
                 last_sent_t = now
-            text = json.dumps(snap)
-            async with clients_lock:
-                dead: list[Any] = []
-                for c in clients:
-                    try:
-                        await c.send(text)
-                    except Exception:
-                        dead.append(c)
-                for c in dead:
-                    clients.discard(c)
+            await _broadcast_json(clients, clients_lock, json.dumps(snap))
             last_broadcast_n = current_n
 
+    last_voxel_sent_t = 0.0
+    last_voxel_broadcast_n = 0
+    last_voxel_stamp: float | None = None
+
+    async def voxel_broadcast_loop() -> None:
+        nonlocal last_voxel_sent_t, last_voxel_broadcast_n, last_voxel_stamp
+        period = 1.0 / max(args.voxel_rate_hz, 1e-6)
+        while True:
+            await asyncio.sleep(period)
+            snap = voxel_box[0]
+            if snap is None:
+                continue
+            current_n = voxel_count["n"]
+            if current_n <= last_voxel_broadcast_n:
+                continue
+            stamp = snap.get("stamp")
+            if isinstance(stamp, (int, float)) and last_voxel_stamp == float(stamp):
+                last_voxel_broadcast_n = current_n
+                continue
+            now = time.monotonic()
+            min_dt = 1.0 / max(args.voxel_rate_hz, 1e-6)
+            if now - last_voxel_sent_t < min_dt:
+                continue
+            last_voxel_sent_t = now
+            await _broadcast_json(clients, clients_lock, json.dumps(snap))
+            last_voxel_broadcast_n = current_n
+            if isinstance(stamp, (int, float)):
+                last_voxel_stamp = float(stamp)
+
     prev_n = 0
+    prev_voxel_n = 0
 
     async def stats() -> None:
-        nonlocal prev_n
+        nonlocal prev_n, prev_voxel_n
         while True:
             await asyncio.sleep(5.0)
             n = count["n"]
+            vn = voxel_count["n"]
             async with clients_lock:
                 nc = len(clients)
-            print(f"[go2_lidar_ws] frames DDS: {n} (+{n - prev_n} / 5s), clients WS: {nc}")
+            line = f"[go2_lidar_ws] frames DDS: {n} (+{n - prev_n} / 5s), clients WS: {nc}"
+            if args.voxel:
+                line += f", voxel DDS: {vn} (+{vn - prev_voxel_n} / 5s)"
+            print(line)
             prev_n = n
+            prev_voxel_n = vn
 
     host = args.host
     port = args.port
-    print(f"[go2_lidar_ws] ws://{host}:{port}  topic={args.topic} iface={args.iface}")
+    voxel_note = f" voxel={args.voxel_topic}" if args.voxel else ""
+    print(f"[go2_lidar_ws] ws://{host}:{port}  topic={args.topic}{voxel_note} iface={args.iface}")
 
-    # Autoriser les navigateurs ouverts sur un autre port (ex. :8080 vs :8765) — même host, origine différente
     ping_interval: float | None = args.ws_ping_interval if args.ws_ping_interval > 0 else None
     ping_timeout: float | None = args.ws_ping_timeout if args.ws_ping_timeout > 0 else None
     serve_kw: dict[str, Any] = {"ping_interval": ping_interval, "ping_timeout": ping_timeout}
@@ -377,8 +552,12 @@ async def _amain(args: argparse.Namespace) -> None:
     except Exception:
         pass
 
+    loops: list[Any] = [broadcast_loop(), stats()]
+    if args.voxel:
+        loops.append(voxel_broadcast_loop())
+
     async with websockets.serve(handler, host, port, **serve_kw):
-        await asyncio.gather(broadcast_loop(), stats())
+        await asyncio.gather(*loops)
 
 
 def main() -> None:
@@ -423,6 +602,33 @@ def main() -> None:
         "--include-joints",
         action="store_true",
         help="Inclure joint_q/joint_dq (orientation articulations) dans robot_state.",
+    )
+    p.add_argument(
+        "--voxel",
+        action="store_true",
+        help="Souscrire rt/voxel_map_compressed et diffuser go2_voxel_map sur le meme WS.",
+    )
+    p.add_argument(
+        "--voxel-topic",
+        default="rt/voxel_map_compressed",
+        help="Topic DDS VoxelMapCompressed (carte voxel Unitree).",
+    )
+    p.add_argument(
+        "--voxel-rate-hz",
+        type=float,
+        default=1.0,
+        help="Limite envoi WS pour go2_voxel_map (Hz).",
+    )
+    p.add_argument(
+        "--voxel-decompress",
+        action="store_true",
+        help="Decompresse LZ4 cote Pi et inclut occupied_points (pip install lz4).",
+    )
+    p.add_argument(
+        "--voxel-max-points",
+        type=int,
+        default=30000,
+        help="Max occupied_points par message voxel (0 = tous).",
     )
     args = p.parse_args()
     asyncio.run(_amain(args))

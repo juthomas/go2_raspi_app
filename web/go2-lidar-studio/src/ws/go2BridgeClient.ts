@@ -1,5 +1,5 @@
-import type { Go2PointCloudMessage, Go2WsMessage } from "../types/go2";
-import { isGo2PointCloudMessage } from "../types/go2";
+import type { Go2PointCloudMessage, Go2VoxelMapMessage, Go2WsMessage } from "../types/go2";
+import { isGo2PointCloudMessage, isGo2VoxelMapMessage } from "../types/go2";
 
 type Handlers = {
   onOpen?: () => void;
@@ -7,6 +7,7 @@ type Handlers = {
   onError?: (message: string) => void;
   onHello?: (msg: Go2WsMessage) => void;
   onPointCloud?: (msg: Go2PointCloudMessage) => void;
+  onVoxelMap?: (msg: Go2VoxelMapMessage) => void;
   onLatency?: (latencyMs: number | null) => void;
 };
 
@@ -91,6 +92,10 @@ export class Go2BridgeClient {
     }
     if (isGo2PointCloudMessage(msg)) {
       this.handlers.onPointCloud?.(msg);
+      return;
+    }
+    if (isGo2VoxelMapMessage(msg)) {
+      this.handlers.onVoxelMap?.(msg);
     }
   }
 

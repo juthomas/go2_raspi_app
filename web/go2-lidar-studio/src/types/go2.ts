@@ -4,6 +4,8 @@ export type Go2HelloMessage = {
   sport_topic?: string;
   low_topic?: string;
   iface?: string;
+  voxel_enabled?: boolean;
+  voxel_topic?: string;
 };
 
 export type Go2ErrorMessage = {
@@ -42,10 +44,35 @@ export type Go2PointCloudMessage = {
   robot_state?: Go2RobotState;
 };
 
-export type Go2WsMessage = Go2HelloMessage | Go2ErrorMessage | Go2PointCloudMessage;
+export type Go2VoxelMapMessage = {
+  type: "go2_voxel_map";
+  stamp?: number;
+  frame_id?: string;
+  resolution?: number;
+  origin?: [number, number, number] | number[];
+  width?: [number, number, number] | number[];
+  src_size?: number;
+  compressed_size?: number;
+  data_b64?: string;
+  decode_note?: string | null;
+  occupied_points?: [number, number, number][] | number[][];
+  recv_mono?: number;
+  robot_state?: Go2RobotState;
+};
+
+export type Go2WsMessage =
+  | Go2HelloMessage
+  | Go2ErrorMessage
+  | Go2PointCloudMessage
+  | Go2VoxelMapMessage;
 
 export const isGo2PointCloudMessage = (value: unknown): value is Go2PointCloudMessage => {
   if (!value || typeof value !== "object") return false;
   const casted = value as Partial<Go2PointCloudMessage>;
   return casted.type === "go2_pointcloud" && Array.isArray(casted.points);
+};
+
+export const isGo2VoxelMapMessage = (value: unknown): value is Go2VoxelMapMessage => {
+  if (!value || typeof value !== "object") return false;
+  return (value as Partial<Go2VoxelMapMessage>).type === "go2_voxel_map";
 };

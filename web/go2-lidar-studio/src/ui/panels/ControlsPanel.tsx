@@ -14,6 +14,7 @@ type Props = {
   controlBridgeText: string;
   settings: UiSettings;
   robotState: Go2RobotState | null;
+  voxelStatusText: string;
   onConnect: () => void;
   onDisconnect: () => void;
   onControlConnect: () => void;
@@ -33,6 +34,7 @@ export function ControlsPanel({
   controlBridgeText,
   settings,
   robotState,
+  voxelStatusText,
   onConnect,
   onDisconnect,
   onControlConnect,
@@ -201,6 +203,38 @@ export function ControlsPanel({
             onChange={(e) => onSettingsChange({ showHistory: e.target.checked })}
           />
           Show history
+        </label>
+      </section>
+
+      <section>
+        <h3>Voxel map</h3>
+        <p className="status disconnected">{voxelStatusText}</p>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={settings.showVoxel}
+            onChange={(e) => onSettingsChange({ showVoxel: e.target.checked })}
+          />
+          Show voxel map
+        </label>
+        <label>
+          Voxel color
+          <input
+            type="color"
+            value={settings.voxelColor}
+            onChange={(e) => onSettingsChange({ voxelColor: e.target.value })}
+          />
+        </label>
+        <label>
+          Voxel point budget ({settings.voxelMaxPoints})
+          <input
+            type="range"
+            min={1000}
+            max={100000}
+            step={1000}
+            value={settings.voxelMaxPoints}
+            onChange={(e) => onSettingsChange({ voxelMaxPoints: Number(e.target.value) })}
+          />
         </label>
       </section>
 

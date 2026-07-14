@@ -1,13 +1,15 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { Go2PointCloudMessage, Go2RobotState } from "../types/go2";
+import type { Go2PointCloudMessage, Go2RobotState, Go2VoxelMapMessage } from "../types/go2";
 import type { UiSettings } from "../state/useGo2Store";
 import { LidarPointCloudLayer } from "./layers/LidarPointCloudLayer";
 import { RobotStickLayer } from "./layers/RobotStickLayer";
+import { VoxelMapLayer } from "./layers/VoxelMapLayer";
 
 type Props = {
   payload: Go2PointCloudMessage | null;
+  voxelPayload: Go2VoxelMapMessage | null;
   robotState: Go2RobotState | null;
   settings: UiSettings;
 };
@@ -16,12 +18,13 @@ type SceneRefs = {
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
   lidar: LidarPointCloudLayer;
+  voxel: VoxelMapLayer;
   robot: RobotStickLayer;
   grid: THREE.GridHelper;
   axes: THREE.AxesHelper;
 };
 
-export function SceneCanvas({ payload, robotState, settings }: Props) {
+export function SceneCanvas({ payload, voxelPayload, robotState, settings }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<SceneRefs | null>(null);
 
@@ -72,13 +75,19 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
       currentColor: settings.currentColor,
       historyColor: settings.historyColor,
     });
+    const voxel = new VoxelMapLayer(scene, {
+      color: settings.voxelColor,
+      maxPoints: settings.voxelMaxPoints,
+    });
     const robot = new RobotStickLayer(scene);
     robot.setScale(settings.robotScale);
     robot.setEnvTransform(settings.envScale, settings.envOffsetX, settings.envOffsetY, settings.envOffsetZ);
     robot.setVisible(settings.showRobot);
     robot.setTrailVisible(settings.showTrail);
+    voxel.setEnvTransform(settings.envScale, settings.envOffsetX, settings.envOffsetY, settings.envOffsetZ);
+    voxel.setVisible(settings.showVoxel);
 
-    sceneRef.current = { camera, controls, lidar, robot, grid, axes };
+    sceneRef.current = { camera, controls, lidar, voxel, robot, grid, axes };
 
     let raf = 0;
     const animate = () => {
@@ -115,6 +124,12 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
   useEffect(() => {
     const refs = sceneRef.current;
     if (!refs) return;
+    refs.voxel.updateFromPayload(voxelPayload);
+  }, [voxelPayload, settings.envScale, settings.envOffsetX, settings.envOffsetY, settings.envOffsetZ]);
+
+  useEffect(() => {
+    const refs = sceneRef.current;
+    if (!refs) return;
     refs.robot.update(robotState ?? undefined);
     if (settings.followRobot && robotState?.position && Array.isArray(robotState.position)) {
       const p = mapRobotPosToScene(robotState.position as number[]);
@@ -138,6 +153,15 @@ export function SceneCanvas({ payload, robotState, settings }: Props) {
     refs.lidar.setHistoryColor(settings.historyColor);
     refs.lidar.setHistoryRetentionMs(settings.historyRetentionSec * 1000);
     refs.lidar.setHistoryEnabled(settings.showHistory);
+    refs.voxel.setColor(settings.voxelColor);
+    refs.voxel.setMaxPoints(settings.voxelMaxPoints);
+    refs.voxel.setVisible(settings.showVoxel);
+    refs.voxel.setEnvTransform(
+      settings.envScale,
+      settings.envOffsetX,
+      settings.envOffsetY,
+      settings.envOffsetZ,
+    );
     refs.robot.setVisible(settings.showRobot);
     refs.robot.setScale(settings.robotScale);
     refs.robot.setEnvTransform(

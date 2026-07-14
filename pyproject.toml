@@ -19,6 +19,7 @@ dds = [
 lidar-ws = [
   "cyclonedds==0.10.2",
   "websockets>=12",
+  "lz4>=4",
 ]
 control-ws = [
   "cyclonedds==0.10.2",
