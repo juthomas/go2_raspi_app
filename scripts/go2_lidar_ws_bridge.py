@@ -519,9 +519,11 @@ async def _amain(args: argparse.Namespace) -> None:
 
     prev_n = 0
     prev_voxel_n = 0
+    voxel_started_at = time.monotonic()
+    voxel_warned = False
 
     async def stats() -> None:
-        nonlocal prev_n, prev_voxel_n
+        nonlocal prev_n, prev_voxel_n, voxel_warned
         while True:
             await asyncio.sleep(5.0)
             n = count["n"]
@@ -532,6 +534,18 @@ async def _amain(args: argparse.Namespace) -> None:
             if args.voxel:
                 line += f", voxel DDS: {vn} (+{vn - prev_voxel_n} / 5s)"
             print(line)
+            if (
+                args.voxel
+                and not voxel_warned
+                and vn == 0
+                and time.monotonic() - voxel_started_at >= 10.0
+            ):
+                voxel_warned = True
+                print(
+                    f"[go2_lidar_ws] WARN: aucune frame voxel sur {args.voxel_topic} — "
+                    "activer le mapping Unitree (app 3D LiDAR Mapping) ou essayer "
+                    "--voxel-topic rt/utlidar/voxel_map"
+                )
             prev_n = n
             prev_voxel_n = vn
 
@@ -606,12 +620,12 @@ def main() -> None:
     p.add_argument(
         "--voxel",
         action="store_true",
-        help="Souscrire rt/voxel_map_compressed et diffuser go2_voxel_map sur le meme WS.",
+        help="Souscrire rt/utlidar/voxel_map_compressed et diffuser go2_voxel_map sur le meme WS.",
     )
     p.add_argument(
         "--voxel-topic",
-        default="rt/voxel_map_compressed",
-        help="Topic DDS VoxelMapCompressed (carte voxel Unitree).",
+        default="rt/utlidar/voxel_map_compressed",
+        help="Topic DDS VoxelMapCompressed (carte voxel Unitree, namespace utlidar).",
     )
     p.add_argument(
         "--voxel-rate-hz",

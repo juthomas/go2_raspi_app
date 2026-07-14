@@ -102,6 +102,7 @@ Troubleshooting:
 - if `python3 scripts/go2_control_ws_bridge.py ...` exits instantly, check missing module errors (typically `websockets`)
 - if the app is opened from another device, avoid `localhost` in `Control WS URL` (use the Pi IP or hostname)
 - two WebSocket connections on the same page are fine (`8765` LiDAR + `8766` control)
+- if bridge logs show `voxel DDS: 0 (+0 / 5s)` while LiDAR frames increase, enable **3D LiDAR Mapping** in the Unitree app (default topic is `rt/utlidar/voxel_map_compressed`, same namespace as LiDAR)
 - if voxel status stays at "metadata only", run the bridge with `--voxel-decompress` and ensure robot mapping is active
 
 ## Data contract expected

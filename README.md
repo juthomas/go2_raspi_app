@@ -138,9 +138,10 @@ Options utiles :
 - `--max-points 4000` / `--stride 2` — réduire la charge réseau (perte de frames acceptable).
 - `--rate-hz 15` — limite l’envoi côté WebSocket.
 - `--include-raw-b64` — inclut le buffer `PointCloud2` brut (plus lourd).
-- `--voxel` — souscrit aussi à `rt/voxel_map_compressed` et diffuse `go2_voxel_map` sur le **même** WebSocket (port 8765).
+- `--voxel` — souscrit aussi à `rt/utlidar/voxel_map_compressed` et diffuse `go2_voxel_map` sur le **même** WebSocket (port 8765).
 - `--voxel-decompress` — décompresse LZ4 côté Pi et inclut `occupied_points` (nécessite `pip install lz4`, inclus dans `.[lidar-ws]`).
 - `--voxel-rate-hz 1` — limite l’envoi de la carte voxel (défaut 1 Hz).
+- `--voxel-topic rt/utlidar/voxel_map_compressed` — topic par défaut (même namespace `utlidar` que le LiDAR).
 
 Exemple avec carte voxel (visualisation dans go2-lidar-studio) :
 
@@ -149,6 +150,8 @@ python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel --voxel-
 ```
 
 Prérequis voxel : LiDAR intégré (`utlidar`) actif et service de mapping Unitree en marche (app « 3D LiDAR Mapping » ou navigation autonome). Sans mapping actif, aucun message `go2_voxel_map` n’est émis.
+
+Dépannage voxel : si les logs affichent `voxel DDS: 0 (+0 / 5s)` pendant que le LiDAR monte (~+75/5s), le robot ne publie pas encore la carte. Vérifier que le mapping est actif dans l’app Unitree. Le bridge affiche un WARN après 10 s sans frame voxel. Topic alternatif : `--voxel-topic rt/utlidar/voxel_map`.
 
 Chaque message JSON contient notamment `stamp.sec` / `stamp.nanosec` (horodatage ROS du nuage), `points: [[x,y,z], ...]`, et `recv_mono` (temps monotonic côté Pi à la réception) pour corrélation avec l’audio enregistré dans ton app. Les messages voxel (`type: "go2_voxel_map"`) arrivent séparément du nuage LiDAR.
 
