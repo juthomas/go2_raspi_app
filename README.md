@@ -190,13 +190,13 @@ python3 scripts/go2_lidar_ws_bridge.py --iface eth0 --port 8765 --voxel \
 
 Chaque message JSON contient notamment `stamp.sec` / `stamp.nanosec` (horodatage ROS du nuage), `points: [[x,y,z], ...]`, et `recv_mono` (temps monotonic côté Pi à la réception) pour corrélation avec l’audio enregistré dans ton app. Les messages voxel (`type: "go2_voxel_map"`) arrivent séparément du nuage LiDAR.
 
-### Autostart au boot (systemd) — LiDAR + contrôle
+### Autostart au boot (systemd) — LiDAR + contrôle + vidéo
 
 Démarrage automatique côté **Raspberry Pi** (pas dans le firmware du robot) :
 
 1. Attente réseau + ping du robot (`192.168.123.161` par défaut)
 2. Mode normal DDS + `rt/utlidar/switch ON` + tentatives `rt/utlidar/mapping_cmd` (best-effort)
-3. Pont **contrôle** WebSocket `:8766` + pont **LiDAR** `:8765` (`--voxel --include-joints`, source height_map par défaut)
+3. Pont **contrôle** WebSocket `:8766` + pont **vidéo WebRTC** `:8081` (fps 15) + pont **LiDAR** `:8765` (`--voxel --include-joints`, source height_map par défaut)
 
 **Prérequis** : robot allumé et debout (~2 min après boot), connexion `go2-eth0` autoconnect, venv avec deps :
 
@@ -227,7 +227,13 @@ sudo systemctl enable --now go2-stack
 sudo journalctl -u go2-stack -f
 ```
 
-Variables utiles dans `/etc/default/go2-stack` (voir `deploy/go2-stack.env.example`) : `IFACE`, `ROBOT_IP`, `MAPPING_CMDS`, `LIDAR_WS_PORT`, `CONTROL_WS_PORT`.
+Variables utiles dans `/etc/default/go2-stack` (voir `deploy/go2-stack.env.example`) : `IFACE`, `ROBOT_IP`, `MAPPING_CMDS`, `LIDAR_WS_PORT`, `CONTROL_WS_PORT`, `VIDEO_ENABLED`, `VIDEO_HTTP_PORT`, `VIDEO_FPS`.
+
+**Extinction Pi depuis l’UI** (`ShutdownPi` / `{type:"shutdown_pi"}`) : le bridge exécute `sudo /sbin/shutdown -h now`. L’utilisateur du service (`pigeons`) doit pouvoir le faire sans mot de passe, par ex. dans `/etc/sudoers.d/go2-shutdown` :
+
+```text
+pigeons ALL=(root) NOPASSWD: /sbin/shutdown
+```
 
 **Limitation carte** : le nuage LiDAR démarre de façon fiable ; `go2_voxel_map` dépend du mapping Unitree (app → `height_map_array` par défaut). Active **3D LiDAR Mapping** + enregistrement dans l’app — le stack utilise `--voxel-map-source height_map` par défaut.
 

@@ -144,6 +144,7 @@ export function App() {
           onControlConnect={actions.connectControl}
           onControlDisconnect={actions.disconnectControl}
           onSettingsChange={actions.updateSettings}
+          onSendControl={actions.sendControlCommand}
         />
       </aside>
 

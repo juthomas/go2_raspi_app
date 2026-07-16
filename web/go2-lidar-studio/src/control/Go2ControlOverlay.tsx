@@ -230,6 +230,17 @@ export function Go2ControlOverlay({
         </button>
         <button onClick={onClearLogs}>ClearLogs</button>
         <button onClick={() => void copyLogs()}>CopyLogs</button>
+        <button onClick={() => onSend({ type: "front_led", enable: 1 })}>FrontLedOn</button>
+        <button onClick={() => onSend({ type: "front_led", enable: 0 })}>FrontLedOff</button>
+        <button
+          onClick={() => {
+            if (window.confirm("Éteindre le Raspberry Pi ?")) {
+              onSend({ type: "shutdown_pi" });
+            }
+          }}
+        >
+          ShutdownPi
+        </button>
       </div>
       <div className="control-debug">
         <div>

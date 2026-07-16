@@ -1,5 +1,5 @@
 [Unit]
-Description=GO2 LiDAR + control WebSocket stack
+Description=GO2 LiDAR + control + video WebRTC stack
 After=network-online.target
 Wants=network-online.target
 

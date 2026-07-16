@@ -19,6 +19,9 @@ LIDAR_VOXEL="${LIDAR_VOXEL:-1}"
 LIDAR_VOXEL_MAP_SOURCE="${LIDAR_VOXEL_MAP_SOURCE:-height_map}"
 LIDAR_VOXEL_DECOMPRESS="${LIDAR_VOXEL_DECOMPRESS:-0}"
 LIDAR_INCLUDE_JOINTS="${LIDAR_INCLUDE_JOINTS:-1}"
+VIDEO_ENABLED="${VIDEO_ENABLED:-1}"
+VIDEO_HTTP_PORT="${VIDEO_HTTP_PORT:-8081}"
+VIDEO_FPS="${VIDEO_FPS:-15}"
 
 cd "$APP_ROOT"
 
@@ -38,10 +41,17 @@ PYTHON="$APP_ROOT/.venv/bin/python"
 PREPARE="$APP_ROOT/scripts/go2_prepare_robot.py"
 CONTROL="$APP_ROOT/scripts/go2_control_ws_bridge.py"
 LIDAR="$APP_ROOT/scripts/go2_lidar_ws_bridge.py"
+VIDEO="$APP_ROOT/scripts/go2_video_webrtc_bridge.py"
 
 CONTROL_PID=""
+VIDEO_PID=""
 
 cleanup() {
+  if [[ -n "$VIDEO_PID" ]] && kill -0 "$VIDEO_PID" 2>/dev/null; then
+    echo "[go2_stack] stopping video bridge (pid $VIDEO_PID)"
+    kill "$VIDEO_PID" 2>/dev/null || true
+    wait "$VIDEO_PID" 2>/dev/null || true
+  fi
   if [[ -n "$CONTROL_PID" ]] && kill -0 "$CONTROL_PID" 2>/dev/null; then
     echo "[go2_stack] stopping control bridge (pid $CONTROL_PID)"
     kill "$CONTROL_PID" 2>/dev/null || true
@@ -74,6 +84,24 @@ sleep 1
 if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
   echo "[go2_stack] ERROR: control bridge exited immediately" >&2
   exit 1
+fi
+
+if [[ "$VIDEO_ENABLED" == "1" ]]; then
+  echo "[go2_stack] starting video WebRTC bridge on port $VIDEO_HTTP_PORT (fps $VIDEO_FPS)..."
+  "$PYTHON" "$VIDEO" \
+    --iface "$IFACE" \
+    --host 0.0.0.0 \
+    --port "$VIDEO_HTTP_PORT" \
+    --fps "$VIDEO_FPS" &
+  VIDEO_PID=$!
+
+  sleep 1
+  if ! kill -0 "$VIDEO_PID" 2>/dev/null; then
+    echo "[go2_stack] ERROR: video bridge exited immediately" >&2
+    exit 1
+  fi
+else
+  echo "[go2_stack] video WebRTC bridge disabled (VIDEO_ENABLED=$VIDEO_ENABLED)"
 fi
 
 LIDAR_ARGS=(--iface "$IFACE" --host 0.0.0.0 --port "$LIDAR_WS_PORT")

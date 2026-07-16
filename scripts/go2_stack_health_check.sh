@@ -7,6 +7,7 @@ IFACE="${IFACE:-eth0}"
 ROBOT_IP="${ROBOT_IP:-192.168.123.161}"
 LIDAR_WS_PORT="${LIDAR_WS_PORT:-8765}"
 CONTROL_WS_PORT="${CONTROL_WS_PORT:-8766}"
+VIDEO_HTTP_PORT="${VIDEO_HTTP_PORT:-8081}"
 PROBE_VOXEL="${PROBE_VOXEL:-0}"
 
 cd "$APP_ROOT"
@@ -22,8 +23,8 @@ fi
 echo ""
 echo "=== listening ports ==="
 if command -v ss >/dev/null 2>&1; then
-  ss -ltnp | rg ":${LIDAR_WS_PORT}|:${CONTROL_WS_PORT}" || {
-    echo "WARN: ports $LIDAR_WS_PORT / $CONTROL_WS_PORT not listening"
+  ss -ltnp | rg ":${LIDAR_WS_PORT}|:${CONTROL_WS_PORT}|:${VIDEO_HTTP_PORT}" || {
+    echo "WARN: ports $LIDAR_WS_PORT / $CONTROL_WS_PORT / $VIDEO_HTTP_PORT not listening"
   }
 else
   echo "WARN: ss not available"

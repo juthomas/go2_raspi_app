@@ -20,6 +20,13 @@ WebSocket protocol:
       {"type":"recovery_stand"}
       {"type":"stop"}
       {"type":"twist","vx":0.2,"vy":0.0,"vyaw":0.0}
+      {"type":"shutdown_pi"}
+      {"type":"front_led","enable":1}
+      {"type":"front_led_on"}
+      {"type":"front_led_off"}
+      {"type":"front_led_brightness","level":5}
+      {"type":"front_led_color","color":"red"}
+        # front_led_color: omit time or time<=0 = hold long; time>0 = temporary seconds
 """
 
 from __future__ import annotations
@@ -31,6 +38,13 @@ import math
 import time
 from typing import Any
 
+
+VUI_API_ID_SETCOLOR = 1007
+VUI_COLORS = frozenset({"white", "red", "yellow", "blue", "green", "cyan", "purple"})
+# API 1007 `time` is duration in seconds before reverting to system green.
+# time<=0 from clients means "hold"; we send a long duration and refresh it.
+VUI_COLOR_HOLD_S = 3600
+VUI_COLOR_REFRESH_S = 300.0
 
 _CODE_HINTS = {
     -1: "SDK/robot service rejected command (often stale sport state or mode mismatch).",
@@ -73,6 +87,7 @@ async def _amain(args: argparse.Namespace) -> None:
         from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
         from unitree_sdk2py.go2.sport.sport_client import SportClient
+        from unitree_sdk2py.go2.vui.vui_client import VuiClient
     except ImportError as e:
         raise SystemExit(
             "Missing dependency: "
@@ -88,6 +103,11 @@ async def _amain(args: argparse.Namespace) -> None:
     motion = MotionSwitcherClient()
     motion.SetTimeout(args.timeout_s)
     motion.Init()
+    vui = VuiClient()
+    vui.SetTimeout(args.timeout_s)
+    vui.Init()
+    # Undocumented in official Python VuiClient; used by Unitree app / WebRTC (api 1007).
+    vui._RegistApi(VUI_API_ID_SETCOLOR, 0)
 
     clients: set[Any] = set()
     clients_lock = asyncio.Lock()
@@ -103,6 +123,10 @@ async def _amain(args: argparse.Namespace) -> None:
     runtime = {"last_code": 0, "last_op": "init", "last_error": "", "last_move_ts": 0.0}
     runtime_lock = asyncio.Lock()
     sdk_lock = asyncio.Lock()
+    vui_lock = asyncio.Lock()
+    # Last LED intent to refresh (firmware restores green status otherwise).
+    led_hold: dict[str, Any] = {"mode": None, "color": None}  # mode: None | "color" | "off"
+    led_hold_lock = asyncio.Lock()
     control_gate = {"until_ts": 0.0}
     control_gate_lock = asyncio.Lock()
 
@@ -226,6 +250,173 @@ async def _amain(args: argparse.Namespace) -> None:
         async with sdk_lock:
             return await asyncio.to_thread(fn, *call_args)
 
+    def _set_vui_color_sync(color: str, time_s: int = 0, flash_cycle: int | None = None) -> int:
+        payload: dict[str, Any] = {"color": color, "time": int(time_s)}
+        if flash_cycle is not None:
+            payload["flash_cycle"] = int(flash_cycle)
+        code, _ = vui._Call(VUI_API_ID_SETCOLOR, json.dumps(payload))
+        return int(code)
+
+    async def _vui_call(fn: Any, *call_args: Any) -> Any:
+        """VUI RPCs use a separate lock so they never block sport.Move."""
+        async with vui_lock:
+            return await asyncio.wait_for(
+                asyncio.to_thread(fn, *call_args),
+                timeout=max(0.5, float(args.timeout_s) + 0.5),
+            )
+
+    async def _clear_led_hold() -> None:
+        async with led_hold_lock:
+            led_hold["mode"] = None
+            led_hold["color"] = None
+
+    async def _set_led_hold_color(color: str) -> None:
+        async with led_hold_lock:
+            led_hold["mode"] = "color"
+            led_hold["color"] = color
+
+    async def _set_led_hold_off() -> None:
+        async with led_hold_lock:
+            led_hold["mode"] = "off"
+            led_hold["color"] = None
+
+    async def _apply_led_off_sync() -> int:
+        # SetSwitch(0) cuts the controllable headlight / color override.
+        # Status green ("powered on") is firmware and cannot be extinguished while powered.
+        # Do not call SetBrightness(0): that only drops white fill and reveals status RGB.
+        return int(await _vui_call(vui.SetSwitch, 0))
+
+    async def _read_vui_light_state() -> tuple[Any, Any]:
+        switch_val: Any = None
+        bright_val: Any = None
+        try:
+            sw_code, sw_enable = await _vui_call(vui.GetSwitch)
+            if int(sw_code) == 0:
+                switch_val = sw_enable
+        except Exception:
+            pass
+        try:
+            br_code, br_level = await _vui_call(vui.GetBrightness)
+            if int(br_code) == 0:
+                bright_val = br_level
+        except Exception:
+            pass
+        return switch_val, bright_val
+
+    async def _run_front_led(ws: Any, *, op_name: str, enable: int) -> None:
+        enable_i = 1 if int(enable) else 0
+        try:
+            if enable_i:
+                await _clear_led_hold()
+                code_sw = int(await _vui_call(vui.SetSwitch, 1))
+                code_br = int(await _vui_call(vui.SetBrightness, 10))
+                code = code_br if code_sw == 0 else code_sw
+                state_msg = ""
+            else:
+                await _set_led_hold_off()
+                code = int(await _apply_led_off_sync())
+                sw, br = await _read_vui_light_state()
+                state_msg = f", switch={sw}, brightness={br} (status green may remain)"
+        except asyncio.TimeoutError:
+            code = 3104
+            state_msg = ""
+        except Exception as exc:
+            async with runtime_lock:
+                runtime["last_code"] = -1
+                runtime["last_op"] = op_name
+                runtime["last_error"] = str(exc)
+            await _broadcast_log(f"{op_name}: failed ({exc})", level="warn")
+            await _ack(ws, op_name, False, str(exc))
+            await _broadcast_status()
+            return
+        async with runtime_lock:
+            runtime["last_code"] = code
+            runtime["last_op"] = op_name
+            runtime["last_error"] = "" if code == 0 else _code_hint(code)
+        if code != 0:
+            await _broadcast_robot_error(op_name, code)
+        await _ack(ws, op_name, code == 0, f"code={code}, hint={_code_hint(code)}{state_msg}")
+        await _broadcast_status()
+
+    async def _run_front_led_brightness(ws: Any, *, level: int) -> None:
+        level_i = max(0, min(10, int(level)))
+        state_msg = ""
+        try:
+            if level_i == 0:
+                # Same as Off: cut searchlight via switch, not SetBrightness(0).
+                await _set_led_hold_off()
+                code = int(await _apply_led_off_sync())
+                sw, br = await _read_vui_light_state()
+                state_msg = f", switch={sw}, brightness={br} (status green may remain)"
+            else:
+                await _clear_led_hold()
+                await _vui_call(vui.SetSwitch, 1)
+                code = int(await _vui_call(vui.SetBrightness, level_i))
+        except asyncio.TimeoutError:
+            code = 3104
+        except Exception as exc:
+            async with runtime_lock:
+                runtime["last_code"] = -1
+                runtime["last_op"] = "front_led_brightness"
+                runtime["last_error"] = str(exc)
+            await _broadcast_log(f"front_led_brightness: failed ({exc})", level="warn")
+            await _ack(ws, "front_led_brightness", False, str(exc))
+            await _broadcast_status()
+            return
+        async with runtime_lock:
+            runtime["last_code"] = code
+            runtime["last_op"] = "front_led_brightness"
+            runtime["last_error"] = "" if code == 0 else _code_hint(code)
+        if code != 0:
+            await _broadcast_robot_error("front_led_brightness", code)
+        await _ack(
+            ws,
+            "front_led_brightness",
+            code == 0,
+            f"level={level_i}, code={code}, hint={_code_hint(code)}{state_msg}",
+        )
+        await _broadcast_status()
+
+    async def _run_front_led_color(ws: Any, *, color: str, time_s: int = 0) -> None:
+        color_l = str(color).strip().lower()
+        if color_l not in VUI_COLORS:
+            await _ack(ws, "front_led_color", False, f"invalid color (use one of: {', '.join(sorted(VUI_COLORS))})")
+            return
+        # time<=0 means hold; API requires a positive duration before reverting to green.
+        hold = int(time_s) <= 0
+        duration_s = VUI_COLOR_HOLD_S if hold else max(1, int(time_s))
+        try:
+            await _vui_call(vui.SetSwitch, 1)
+            code = int(await _vui_call(_set_vui_color_sync, color_l, duration_s))
+        except asyncio.TimeoutError:
+            code = 3104
+        except Exception as exc:
+            async with runtime_lock:
+                runtime["last_code"] = -1
+                runtime["last_op"] = "front_led_color"
+                runtime["last_error"] = str(exc)
+            await _broadcast_log(f"front_led_color: failed ({exc})", level="warn")
+            await _ack(ws, "front_led_color", False, str(exc))
+            await _broadcast_status()
+            return
+        if code == 0 and hold:
+            await _set_led_hold_color(color_l)
+        elif code == 0:
+            await _clear_led_hold()
+        async with runtime_lock:
+            runtime["last_code"] = code
+            runtime["last_op"] = "front_led_color"
+            runtime["last_error"] = "" if code == 0 else _code_hint(code)
+        if code != 0:
+            await _broadcast_robot_error("front_led_color", code)
+        await _ack(
+            ws,
+            "front_led_color",
+            code == 0,
+            f"color={color_l}, time={duration_s}, hold={hold}, code={code}, hint={_code_hint(code)}",
+        )
+        await _broadcast_status()
+
     async def _ensure_normal_mode() -> tuple[bool, str]:
         check_code, payload = await _sdk_call(motion.CheckMode)
         if check_code == 0 and _looks_like_normal_mode(payload):
@@ -324,6 +515,12 @@ async def _amain(args: argparse.Namespace) -> None:
                     "recovery_stand",
                     "stop",
                     "twist",
+                    "shutdown_pi",
+                    "front_led",
+                    "front_led_on",
+                    "front_led_off",
+                    "front_led_brightness",
+                    "front_led_color",
                 ],
             },
         )
@@ -390,6 +587,60 @@ async def _amain(args: argparse.Namespace) -> None:
                     await _broadcast_log("posture pilot released", level="info")
                     await _ack(ws, "release_pilot", True)
                     await _broadcast_status()
+                    continue
+
+                # Host power management: any connected client (no posture pilot).
+                if typ == "shutdown_pi":
+                    await _broadcast_log("host shutdown requested", level="info")
+                    await _ack(ws, "shutdown_pi", True, "host shutdown scheduled")
+
+                    async def _do_host_shutdown() -> None:
+                        await asyncio.sleep(1.0)
+                        try:
+                            proc = await asyncio.create_subprocess_exec(
+                                "sudo",
+                                "/sbin/shutdown",
+                                "-h",
+                                "now",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                            )
+                            stdout, stderr = await proc.communicate()
+                            if proc.returncode != 0:
+                                err = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()
+                                await _broadcast_log(
+                                    f"shutdown_pi failed: {err or f'exit={proc.returncode}'}",
+                                    level="warn",
+                                )
+                        except Exception as exc:
+                            await _broadcast_log(f"shutdown_pi failed: {exc}", level="warn")
+
+                    asyncio.create_task(_do_host_shutdown())
+                    continue
+
+                # Front LED (VUI): any connected client (no posture pilot).
+                if typ in ("front_led_on", "front_led_off", "front_led"):
+                    if typ == "front_led_on":
+                        enable = 1
+                        op_name = "front_led_on"
+                    elif typ == "front_led_off":
+                        enable = 0
+                        op_name = "front_led_off"
+                    else:
+                        enable = 1 if int(_safe_float(data.get("enable", 0), default=0)) else 0
+                        op_name = "front_led"
+                    await _run_front_led(ws, op_name=op_name, enable=enable)
+                    continue
+
+                if typ == "front_led_brightness":
+                    level = int(_safe_float(data.get("level", 5), default=5))
+                    await _run_front_led_brightness(ws, level=level)
+                    continue
+
+                if typ == "front_led_color":
+                    color = str(data.get("color", "") or "")
+                    time_s = int(_safe_float(data.get("time", 0), default=0))
+                    await _run_front_led_color(ws, color=color, time_s=time_s)
                     continue
 
                 # twist / stop: any connected client when multi_control (default).
@@ -554,6 +805,38 @@ async def _amain(args: argparse.Namespace) -> None:
             await asyncio.sleep(1.0)
             await _broadcast_status()
 
+    async def led_hold_loop() -> None:
+        """Re-apply held searchlight off / color. Status green is firmware and may remain."""
+        while True:
+            async with led_hold_lock:
+                mode = led_hold["mode"]
+            # Off: keep SetSwitch(0) so headlight/color does not come back.
+            await asyncio.sleep(2.0 if mode == "off" else VUI_COLOR_REFRESH_S)
+            async with led_hold_lock:
+                mode = led_hold["mode"]
+                color = led_hold["color"]
+            if mode == "off":
+                try:
+                    code = int(await _apply_led_off_sync())
+                    if code != 0:
+                        await _broadcast_log(
+                            f"led_off refresh failed code={code} hint={_code_hint(code)}",
+                            level="warn",
+                        )
+                except Exception as exc:
+                    await _broadcast_log(f"led_off refresh exception: {exc}", level="warn")
+            elif mode == "color" and color:
+                try:
+                    await _vui_call(vui.SetSwitch, 1)
+                    code = int(await _vui_call(_set_vui_color_sync, str(color), VUI_COLOR_HOLD_S))
+                    if code != 0:
+                        await _broadcast_log(
+                            f"color_hold refresh failed color={color} code={code} hint={_code_hint(code)}",
+                            level="warn",
+                        )
+                except Exception as exc:
+                    await _broadcast_log(f"color_hold refresh exception: {exc}", level="warn")
+
     serve_kw: dict[str, Any] = {
         "ping_interval": args.ws_ping_interval if args.ws_ping_interval > 0 else None,
         "ping_timeout": args.ws_ping_timeout if args.ws_ping_timeout > 0 else None,
@@ -562,7 +845,7 @@ async def _amain(args: argparse.Namespace) -> None:
     print(f"[go2_control_ws] ws://{args.host}:{args.port} iface={args.iface} mode={mode}")
     try:
         async with websockets.serve(handler, args.host, args.port, **serve_kw):
-            await asyncio.gather(control_loop(), stats_loop())
+            await asyncio.gather(control_loop(), stats_loop(), led_hold_loop())
     except OSError as exc:
         if exc.errno == 98:
             raise SystemExit(

@@ -20,7 +20,10 @@ type Props = {
   onControlConnect: () => void;
   onControlDisconnect: () => void;
   onSettingsChange: (patch: Partial<UiSettings>) => void;
+  onSendControl: (payload: Record<string, unknown>) => void;
 };
+
+const FRONT_LED_COLORS = ["white", "red", "yellow", "blue", "green", "cyan", "purple"] as const;
 
 export function ControlsPanel({
   status,
@@ -40,6 +43,7 @@ export function ControlsPanel({
   onControlConnect,
   onControlDisconnect,
   onSettingsChange,
+  onSendControl,
 }: Props) {
   const pos = Array.isArray(robotState?.position) ? robotState.position : [];
   const rpy = Array.isArray(robotState?.rpy) ? robotState.rpy : [];
@@ -49,6 +53,7 @@ export function ControlsPanel({
     const n = Number(raw);
     return Number.isFinite(n) ? n : fallback;
   };
+  const controlConnected = controlStatus === "connected";
 
   return (
     <div className="controls-panel">
@@ -143,6 +148,57 @@ export function ControlsPanel({
             onChange={(e) => onSettingsChange({ controlSpeedVyaw: Number(e.target.value) })}
           />
         </label>
+      </section>
+
+      <section>
+        <h3>Front LED</h3>
+        <div className="row">
+          <button
+            disabled={!controlConnected}
+            onClick={() => onSendControl({ type: "front_led", enable: 1 })}
+            title="Allume le phare (blanc)"
+          >
+            On
+          </button>
+          <button
+            disabled={!controlConnected}
+            onClick={() => onSendControl({ type: "front_led", enable: 0 })}
+            title="Coupe le phare blanc / couleurs. Le vert statut peut rester allumé robot sous tension."
+          >
+            Off phare
+          </button>
+        </div>
+        <label>
+          Brightness
+          <input
+            type="range"
+            min={0}
+            max={10}
+            step={1}
+            defaultValue={5}
+            disabled={!controlConnected}
+            onChange={(e) =>
+              onSendControl({ type: "front_led_brightness", level: Number(e.target.value) })
+            }
+          />
+        </label>
+        <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+          {FRONT_LED_COLORS.map((color) => (
+            <button
+              key={color}
+              disabled={!controlConnected}
+              title={color}
+              onClick={() => onSendControl({ type: "front_led_color", color })}
+              style={{ textTransform: "capitalize" }}
+            >
+              {color}
+            </button>
+          ))}
+        </div>
+        <p className="status disconnected" style={{ fontSize: "0.85em", marginTop: 8 }}>
+          Off coupe le phare / couleurs. Le vert statut (robot allumé) ne peut pas être éteint via le SDK.
+        </p>
+        {!controlConnected ? <p className="status disconnected">Connect Control WS to control LED</p> : null}
       </section>
 
       <section>
