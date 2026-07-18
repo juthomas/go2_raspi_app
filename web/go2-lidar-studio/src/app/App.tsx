@@ -24,6 +24,7 @@ function displayLatency(value: number | null): string {
 export function App() {
   const { state, actions } = useGo2Store();
   const [webrtcRttMs, setWebrtcRttMs] = useState<number | null>(null);
+  const [webrtcStatusText, setWebrtcStatusText] = useState("OFF");
   const [piHttpPingMs, setPiHttpPingMs] = useState<number | null>(null);
   const [fpsBins, setFpsBins] = useState<number[]>(() => emptyBins());
   const [latencyBins, setLatencyBins] = useState<{
@@ -134,10 +135,12 @@ export function App() {
           controlStatusText={state.controlStatusText}
           controlLatencyMs={state.controlLatencyMs}
           webrtcRttMs={webrtcRttMs}
+          webrtcStatusText={webrtcStatusText}
           piHttpPingMs={piHttpPingMs}
           controlBridgeText={state.controlBridgeText}
           settings={state.settings}
           robotState={state.robotState}
+          cloudStatusText={state.cloudStatusText}
           voxelStatusText={state.voxelStatusText}
           onConnect={actions.connect}
           onDisconnect={actions.disconnect}
@@ -159,6 +162,7 @@ export function App() {
           enabled={state.settings.webrtcVideoEnabled}
           baseUrl={state.settings.webrtcVideoUrl}
           onRttUpdate={setWebrtcRttMs}
+          onStatusUpdate={setWebrtcStatusText}
         />
         <Go2ControlOverlay
           enabled={state.settings.controlEnabled}
@@ -172,6 +176,7 @@ export function App() {
           debugLogs={state.controlDebugLogs}
           onClearLogs={actions.clearControlLogs}
           onSend={actions.sendControlCommand}
+          onSendPosture={actions.sendPostureCommand}
           speedVx={state.settings.controlSpeedVx}
           speedVyaw={state.settings.controlSpeedVyaw}
         />

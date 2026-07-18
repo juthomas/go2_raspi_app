@@ -32,10 +32,24 @@ import asyncio
 import base64
 import json
 import math
+import queue
 import struct
 import threading
 import time
 from typing import Any
+
+
+def _publish_utlidar_switch_on() -> None:
+    """Republish LiDAR switch ON (same pattern as go2_prepare_robot)."""
+    from unitree_sdk2py.core.channel import ChannelPublisher
+    from unitree_sdk2py.idl.default import std_msgs_msg_dds__String_
+    from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
+
+    pub = ChannelPublisher("rt/utlidar/switch", String_)
+    pub.Init()
+    msg = std_msgs_msg_dds__String_()
+    msg.data = "ON"
+    pub.Write(msg)
 
 _DEBUG_LOG_PATH = "/home/pigeons/Documents/unitree/go2_raspi_app/.cursor/debug-9466d0.log"
 _DEBUG_SESSION = "9466d0"
@@ -482,24 +496,52 @@ async def _amain(args: argparse.Namespace) -> None:
         "sport_mono": None,
         "low_mono": None,
     }
+    # Keep DDS cloud callback fast: pack off-thread so a slow decode cannot stall the subscriber.
+    lidar_q: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(args.queue_len)))
+    pack_stop = threading.Event()
+
+    def _enqueue_lidar(msg: Any) -> None:
+        try:
+            lidar_q.put_nowait(msg)
+            return
+        except queue.Full:
+            pass
+        try:
+            lidar_q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            lidar_q.put_nowait(msg)
+        except queue.Full:
+            pass
 
     def on_lidar(msg: Any) -> None:
-        try:
-            packed = _pack_message(
-                msg,
-                max_points=args.max_points,
-                stride=args.stride,
-                include_raw_b64=args.include_raw_b64,
-            )
-            packed["recv_mono"] = time.time()
-            with state_lock:
-                snap = _build_robot_state_snapshot(robot_state)
-            if snap is not None:
-                packed["robot_state"] = snap
-            box[0] = packed
-            count["n"] += 1
-        except Exception as exc:
-            box[0] = {"type": "error", "msg": str(exc)}
+        _enqueue_lidar(msg)
+
+    def lidar_pack_worker() -> None:
+        while not pack_stop.is_set():
+            try:
+                msg = lidar_q.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                packed = _pack_message(
+                    msg,
+                    max_points=args.max_points,
+                    stride=args.stride,
+                    include_raw_b64=args.include_raw_b64,
+                )
+                packed["recv_mono"] = time.time()
+                with state_lock:
+                    snap = _build_robot_state_snapshot(robot_state)
+                if snap is not None:
+                    packed["robot_state"] = snap
+                box[0] = packed
+                count["n"] += 1
+            except Exception as exc:
+                print(f"[go2_lidar_ws][error] cloud pack: {exc}", flush=True)
+                box[0] = {"type": "error", "msg": f"cloud: {exc}"}
+                count["n"] += 1
 
     def on_voxel(msg: Any) -> None:
         try:
@@ -537,7 +579,9 @@ async def _amain(args: argparse.Namespace) -> None:
                 {"error": str(exc)},
             )
             # #endregion
+            print(f"[go2_lidar_ws][error] voxel pack: {exc}", flush=True)
             voxel_box[0] = {"type": "error", "msg": f"voxel: {exc}"}
+            voxel_count["n"] += 1
 
     def on_height_map(msg: Any) -> None:
         try:
@@ -555,7 +599,9 @@ async def _amain(args: argparse.Namespace) -> None:
             voxel_count["n"] += 1
             height_map_count["n"] += 1
         except Exception as exc:
+            print(f"[go2_lidar_ws][error] height_map pack: {exc}", flush=True)
             voxel_box[0] = {"type": "error", "msg": f"height_map: {exc}"}
+            voxel_count["n"] += 1
 
     def on_sport(msg: Any) -> None:
         try:
@@ -601,7 +647,9 @@ async def _amain(args: argparse.Namespace) -> None:
             )
             # #endregion
             box[0] = {"type": "error", "msg": f"DDS init/subscribe: {exc}"}
+            count["n"] += 1
 
+    threading.Thread(target=lidar_pack_worker, name="lidar-pack", daemon=True).start()
     threading.Thread(target=dds_thread, name="dds-lidar", daemon=True).start()
 
     clients: set[Any] = set()
@@ -633,11 +681,39 @@ async def _amain(args: argparse.Namespace) -> None:
             if args.voxel:
                 hello["voxel_enabled"] = True
                 hello["voxel_map_source"] = args.voxel_map_source
+                hello["cloud_frames"] = int(count["n"])
+                hello["map_frames"] = int(voxel_count["n"])
                 if use_height_map:
                     hello["height_map_topic"] = args.height_map_topic
+                    hello["height_map_frames"] = int(height_map_count["n"])
                 if use_compressed:
                     hello["voxel_topic"] = args.voxel_topic
+                    hello["compressed_map_frames"] = int(compressed_map_count["n"])
+            else:
+                hello["cloud_frames"] = int(count["n"])
             await ws.send(json.dumps(hello))
+
+            # Keyframe: push last known cloud/map so late joiners aren't blank until next DDS.
+            cloud_snap = box[0]
+            if isinstance(cloud_snap, dict) and cloud_snap.get("type") in (
+                "go2_pointcloud",
+                "error",
+            ):
+                try:
+                    await ws.send(json.dumps(cloud_snap))
+                except Exception:
+                    pass
+            if args.voxel:
+                map_snap = voxel_box[0]
+                if isinstance(map_snap, dict) and map_snap.get("type") in (
+                    "go2_voxel_map",
+                    "error",
+                ):
+                    try:
+                        await ws.send(json.dumps(map_snap))
+                    except Exception:
+                        pass
+
             async for raw in ws:
                 try:
                     data = json.loads(raw)
@@ -718,17 +794,24 @@ async def _amain(args: argparse.Namespace) -> None:
     prev_compressed_map_n = 0
     voxel_started_at = time.monotonic()
     voxel_warned = False
+    last_cloud_progress_mono = time.monotonic()
+    last_cloud_switch_repub_mono = 0.0
+    cloud_stall_cooldown_s = 15.0
 
     async def stats() -> None:
         nonlocal prev_n, prev_voxel_n, prev_height_map_n, prev_compressed_map_n, voxel_warned
+        nonlocal last_cloud_progress_mono, last_cloud_switch_repub_mono
         while True:
             await asyncio.sleep(5.0)
             n = count["n"]
             vn = voxel_count["n"]
             hn = height_map_count["n"]
             cn = compressed_map_count["n"]
+            now = time.monotonic()
             async with clients_lock:
                 nc = len(clients)
+            if n > prev_n:
+                last_cloud_progress_mono = now
             line = f"[go2_lidar_ws] frames DDS: {n} (+{n - prev_n} / 5s), clients WS: {nc}"
             if args.voxel:
                 if use_height_map:
@@ -738,6 +821,35 @@ async def _amain(args: argparse.Namespace) -> None:
                 elif not use_height_map:
                     line += f", map DDS: {vn} (+{vn - prev_voxel_n} / 5s)"
             print(line)
+
+            stall_s = float(args.cloud_stall_s)
+            if stall_s > 0 and (now - last_cloud_progress_mono) >= stall_s:
+                if (now - last_cloud_switch_repub_mono) >= cloud_stall_cooldown_s:
+                    last_cloud_switch_repub_mono = now
+                    print(
+                        f"[go2_lidar_ws] WARN: cloud DDS stalled "
+                        f"({now - last_cloud_progress_mono:.0f}s, frames={n}); "
+                        "re-sending rt/utlidar/switch ON",
+                        flush=True,
+                    )
+                    try:
+                        await asyncio.to_thread(_publish_utlidar_switch_on)
+                    except Exception as exc:
+                        print(
+                            f"[go2_lidar_ws] WARN: cloud stall switch republish failed: {exc}",
+                            flush=True,
+                        )
+                    await _broadcast_json(
+                        clients,
+                        clients_lock,
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "msg": "cloud stalled; re-sent LiDAR switch ON",
+                            }
+                        ),
+                    )
+
             if use_height_map and use_compressed:
                 no_map_frames = hn == 0 and cn == 0
             elif use_height_map:
@@ -906,6 +1018,12 @@ def main() -> None:
         type=int,
         default=30000,
         help="Max occupied_points par message voxel (0 = tous).",
+    )
+    p.add_argument(
+        "--cloud-stall-s",
+        type=float,
+        default=8.0,
+        help="Si aucune frame cloud pendant N s, republier switch ON (0 = desactive).",
     )
     args = p.parse_args()
     asyncio.run(_amain(args))

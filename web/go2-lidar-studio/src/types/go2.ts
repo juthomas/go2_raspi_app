@@ -6,6 +6,12 @@ export type Go2HelloMessage = {
   iface?: string;
   voxel_enabled?: boolean;
   voxel_topic?: string;
+  voxel_map_source?: string;
+  height_map_topic?: string;
+  cloud_frames?: number;
+  map_frames?: number;
+  height_map_frames?: number;
+  compressed_map_frames?: number;
 };
 
 export type Go2ErrorMessage = {
@@ -56,6 +62,8 @@ export type Go2VoxelMapMessage = {
   data_b64?: string;
   decode_note?: string | null;
   occupied_points?: [number, number, number][] | number[][];
+  map_source?: string;
+  height_map_topic?: string;
   recv_mono?: number;
   robot_state?: Go2RobotState;
 };

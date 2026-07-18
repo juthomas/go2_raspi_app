@@ -10,10 +10,12 @@ type Props = {
   controlStatusText: string;
   controlLatencyMs: number | null;
   webrtcRttMs: number | null;
+  webrtcStatusText: string;
   piHttpPingMs: number | null;
   controlBridgeText: string;
   settings: UiSettings;
   robotState: Go2RobotState | null;
+  cloudStatusText: string;
   voxelStatusText: string;
   onConnect: () => void;
   onDisconnect: () => void;
@@ -33,10 +35,12 @@ export function ControlsPanel({
   controlStatusText,
   controlLatencyMs,
   webrtcRttMs,
+  webrtcStatusText,
   piHttpPingMs,
   controlBridgeText,
   settings,
   robotState,
+  cloudStatusText,
   voxelStatusText,
   onConnect,
   onDisconnect,
@@ -74,6 +78,7 @@ export function ControlsPanel({
           <button onClick={onDisconnect}>Disconnect</button>
         </div>
         <p className={`status ${status}`}>{statusText}</p>
+        <p className={`status ${status === "connected" ? "connected" : "disconnected"}`}>{cloudStatusText}</p>
         <p className={`status ${status === "connected" ? "connected" : "disconnected"}`}>
           LiDAR WS ping: {wsLatencyMs == null ? "--" : `${wsLatencyMs} ms`}
         </p>
@@ -93,9 +98,12 @@ export function ControlsPanel({
           <input
             value={settings.webrtcVideoUrl}
             onChange={(e) => onSettingsChange({ webrtcVideoUrl: e.target.value })}
-            placeholder="http://127.0.0.1:8081"
+            placeholder={`${window.location.protocol}//${window.location.hostname}:8081`}
           />
         </label>
+        <p className="status disconnected">
+          From another PC use the Pi hostname/IP, not 127.0.0.1. Verify with /health on that URL.
+        </p>
         <label className="checkbox">
           <input
             type="checkbox"
@@ -121,6 +129,9 @@ export function ControlsPanel({
         <p className={`status ${controlStatus}`}>{controlStatusText}</p>
         <p className={`status ${controlStatus === "connected" ? "connected" : "disconnected"}`}>
           Control WS ping: {controlLatencyMs == null ? "--" : `${controlLatencyMs} ms`}
+        </p>
+        <p className={`status ${settings.webrtcVideoEnabled ? "connected" : "disconnected"}`}>
+          WebRTC: {settings.webrtcVideoEnabled ? webrtcStatusText || "starting…" : "disabled"}
         </p>
         <p className={`status ${settings.webrtcVideoEnabled ? "connected" : "disconnected"}`}>
           WebRTC RTT: {webrtcRttMs == null ? "--" : `${webrtcRttMs} ms`}

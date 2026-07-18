@@ -16,6 +16,7 @@ type StatusMessage = {
   type: "status";
   pilot?: boolean;
   posture_pilot?: boolean;
+  you_are_posture_pilot?: boolean;
   can_drive?: boolean;
   connected_clients?: number;
   active_controller?: string | null;
@@ -157,7 +158,6 @@ export class Go2ControlClient {
       this.reconnectAttempt = 0;
       this.handlers.onOpen?.();
       this.startPingLoop();
-      this.send({ type: "claim_pilot" });
     };
     ws.onclose = (ev) => {
       this.stopPingLoop();

@@ -54,6 +54,7 @@ _CODE_HINTS = {
     3203: "API unsupported by firmware.",
     3204: "Invalid argument.",
     4202: "sport service not initialized.",
+    4205: "sport service busy/stale (rearm often needed).",
     7004: "motion_switcher service unavailable/disabled.",
 }
 
@@ -123,6 +124,7 @@ async def _amain(args: argparse.Namespace) -> None:
     runtime = {"last_code": 0, "last_op": "init", "last_error": "", "last_move_ts": 0.0}
     runtime_lock = asyncio.Lock()
     sdk_lock = asyncio.Lock()
+    posture_op_lock = asyncio.Lock()
     vui_lock = asyncio.Lock()
     # Last LED intent to refresh (firmware restores green status otherwise).
     led_hold: dict[str, Any] = {"mode": None, "color": None}  # mode: None | "color" | "off"
@@ -165,7 +167,7 @@ async def _amain(args: argparse.Namespace) -> None:
 
     async def _send_json(ws: Any, payload: dict[str, Any]) -> None:
         try:
-            await ws.send(json.dumps(payload))
+            await asyncio.wait_for(ws.send(json.dumps(payload)), timeout=1.0)
         except Exception:
             pass
 
@@ -190,7 +192,7 @@ async def _amain(args: argparse.Namespace) -> None:
                 for c in dead:
                     clients.discard(c)
 
-    async def _build_status_payload() -> dict[str, Any]:
+    async def _build_status_payload(*, for_ws: Any | None = None) -> dict[str, Any]:
         vx, vy, vyaw, controller = await resolve_active_target()
         async with active_meta_lock:
             active_meta["controller"] = controller
@@ -198,7 +200,9 @@ async def _amain(args: argparse.Namespace) -> None:
             active_meta["vy"] = vy
             active_meta["vyaw"] = vyaw
         async with pilot_lock:
-            has_posture_pilot = pilot["ws"] is not None
+            pilot_ws = pilot["ws"]
+            has_posture_pilot = pilot_ws is not None
+            you_are_posture_pilot = for_ws is not None and pilot_ws is for_ws
         async with clients_lock:
             n_clients = len(clients)
         async with runtime_lock:
@@ -212,6 +216,8 @@ async def _amain(args: argparse.Namespace) -> None:
             "type": "status",
             "pilot": has_posture_pilot,
             "posture_pilot": has_posture_pilot,
+            # Per-client: True only for the websocket that claimed posture pilot.
+            "you_are_posture_pilot": you_are_posture_pilot,
             "multi_control": bool(args.multi_control),
             "connected_clients": n_clients,
             "can_drive": n_clients > 0 and (args.multi_control or has_posture_pilot),
@@ -227,7 +233,18 @@ async def _amain(args: argparse.Namespace) -> None:
         }
 
     async def _broadcast_status() -> None:
-        await _broadcast_payload(await _build_status_payload())
+        async with clients_lock:
+            snapshot = list(clients)
+        dead: list[Any] = []
+        for c in snapshot:
+            try:
+                await _send_json(c, await _build_status_payload(for_ws=c))
+            except Exception:
+                dead.append(c)
+        if dead:
+            async with clients_lock:
+                for c in dead:
+                    clients.discard(c)
 
     async def _broadcast_log(msg: str, *, level: str = "info") -> None:
         payload = {"type": "log", "level": str(level), "msg": str(msg), "ts": time.time()}
@@ -247,8 +264,26 @@ async def _amain(args: argparse.Namespace) -> None:
         await _broadcast_payload(payload)
 
     async def _sdk_call(fn: Any, *call_args: Any) -> Any:
+        """Run a blocking SDK RPC under an exclusive lock.
+
+        On timeout the caller gets TimeoutError, but the lock is held until the
+        worker thread finishes so two Sport/MotionSwitcher RPCs never overlap.
+        """
+        timeout = max(0.5, float(args.timeout_s) + 0.5)
         async with sdk_lock:
-            return await asyncio.to_thread(fn, *call_args)
+            fut = asyncio.get_running_loop().run_in_executor(None, lambda: fn(*call_args))
+            try:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+            except asyncio.TimeoutError:
+                print(
+                    f"[go2_control_ws][warn] SDK call timed out after {timeout:.1f}s "
+                    f"({getattr(fn, '__name__', fn)}); waiting for thread to finish"
+                )
+                try:
+                    await fut
+                except Exception:
+                    pass
+                raise
 
     def _set_vui_color_sync(color: str, time_s: int = 0, flash_cycle: int | None = None) -> int:
         payload: dict[str, Any] = {"color": color, "time": int(time_s)}
@@ -418,16 +453,58 @@ async def _amain(args: argparse.Namespace) -> None:
         await _broadcast_status()
 
     async def _ensure_normal_mode() -> tuple[bool, str]:
-        check_code, payload = await _sdk_call(motion.CheckMode)
+        try:
+            check_code, payload = await _sdk_call(motion.CheckMode)
+        except asyncio.TimeoutError:
+            message = "CheckMode timed out"
+            if args.strict_normal_mode:
+                return False, message
+            return True, f"WARNING: {message}; continuing anyway"
         if check_code == 0 and _looks_like_normal_mode(payload):
             return True, "normal mode already active"
-        select_code, _ = await _sdk_call(motion.SelectMode, "normal")
+        try:
+            select_code, _ = await _sdk_call(motion.SelectMode, "normal")
+        except asyncio.TimeoutError:
+            message = "SelectMode(normal) timed out"
+            if args.strict_normal_mode:
+                return False, message
+            return True, f"WARNING: {message}; continuing anyway"
         if select_code != 0:
             message = f"SelectMode(normal) failed: code={select_code}, hint={_code_hint(select_code)}"
             if args.strict_normal_mode:
                 return False, message
             return True, f"WARNING: {message}; continuing anyway"
         return True, "normal mode activated"
+
+    async def _rearm_sport_light(*, reason: str = "") -> tuple[bool, str]:
+        """Lightweight sport rearm (StopMove + normal mode + probe). No teach/lowcmd."""
+        notes: list[str] = []
+        if reason:
+            notes.append(reason)
+        try:
+            stop_code = int(await _sdk_call(sport.StopMove))
+            notes.append(f"StopMove={stop_code}")
+        except asyncio.TimeoutError:
+            notes.append("StopMove=timeout")
+        except Exception as exc:
+            notes.append(f"StopMove={exc}")
+
+        ok_mode, mode_msg = await _ensure_normal_mode()
+        notes.append(mode_msg)
+        if not ok_mode:
+            return False, "rearm failed: " + "; ".join(notes)
+
+        try:
+            probe = int(await _sdk_call(sport.StopMove))
+            notes.append(f"probe={probe}")
+            ok = probe == 0 or not args.strict_normal_mode
+        except asyncio.TimeoutError:
+            notes.append("probe=timeout")
+            ok = not args.strict_normal_mode
+        except Exception as exc:
+            notes.append(f"probe={exc}")
+            ok = False
+        return ok, "rearm: " + "; ".join(notes)
 
     async def _pause_control_loop(duration_s: float) -> None:
         until = time.monotonic() + max(0.0, float(duration_s))
@@ -446,49 +523,181 @@ async def _amain(args: argparse.Namespace) -> None:
         return False
 
     async def _run_posture_command(ws: Any, *, op_name: str, sdk_call: Any) -> None:
-        await _broadcast_log(f"{op_name}: start", level="info")
-        await clear_all_targets()
-        await _pause_control_loop(max(args.posture_guard_s, args.control_period * 2))
-        stop_code = int(await _sdk_call(sport.StopMove))
-        if stop_code != 0:
-            async with runtime_lock:
-                runtime["last_code"] = stop_code
-                runtime["last_op"] = f"{op_name}_pre_stop"
-                runtime["last_error"] = _code_hint(stop_code)
-            message = f"{op_name}: pre-stop failed code={stop_code} hint={_code_hint(stop_code)}"
-            if args.strict_pre_stop:
-                await _broadcast_log(message, level="warn")
-                await _ack(ws, op_name, False, f"pre-stop failed: code={stop_code}, hint={_code_hint(stop_code)}")
+        if not await _require_posture_pilot(ws, op_name):
+            return
+        async with posture_op_lock:
+            await _broadcast_log(f"{op_name}: start", level="info")
+            await clear_all_targets()
+            await _pause_control_loop(max(args.posture_guard_s, args.control_period * 2))
+            try:
+                stop_code = int(await _sdk_call(sport.StopMove))
+            except asyncio.TimeoutError:
+                await _broadcast_log(f"{op_name}: pre-stop timed out", level="warn")
+                await _ack(ws, op_name, False, "pre-stop timed out")
                 await _broadcast_status()
                 return
-            await _broadcast_log(f"{message} (continuing anyway)", level="warn")
+            if stop_code != 0:
+                async with runtime_lock:
+                    runtime["last_code"] = stop_code
+                    runtime["last_op"] = f"{op_name}_pre_stop"
+                    runtime["last_error"] = _code_hint(stop_code)
+                message = f"{op_name}: pre-stop failed code={stop_code} hint={_code_hint(stop_code)}"
+                if args.strict_pre_stop:
+                    await _broadcast_log(message, level="warn")
+                    await _ack(
+                        ws,
+                        op_name,
+                        False,
+                        f"pre-stop failed: code={stop_code}, hint={_code_hint(stop_code)}",
+                    )
+                    await _broadcast_status()
+                    return
+                await _broadcast_log(f"{message} (continuing anyway)", level="warn")
 
+            # Rearm for stand + recovery; other postures only need normal mode.
+            needs_rearm = op_name in ("stand_up", "stand_down", "recovery_stand")
+            if needs_rearm:
+                ok_rearm, rearm_msg = await _rearm_sport_light(reason=f"pre-{op_name}")
+                await _broadcast_log(f"{op_name}: {rearm_msg}", level="info" if ok_rearm else "warn")
+                if not ok_rearm and args.strict_normal_mode:
+                    await _ack(ws, op_name, False, rearm_msg)
+                    async with runtime_lock:
+                        runtime["last_code"] = -1
+                        runtime["last_op"] = op_name
+                        runtime["last_error"] = rearm_msg
+                    await _broadcast_status()
+                    return
+            else:
+                ok_mode, mode_msg = await _ensure_normal_mode()
+                if not ok_mode:
+                    await _broadcast_log(f"{op_name}: normal mode failed ({mode_msg})", level="warn")
+                    await _ack(ws, op_name, False, mode_msg)
+                    async with runtime_lock:
+                        runtime["last_code"] = -1
+                        runtime["last_op"] = op_name
+                        runtime["last_error"] = mode_msg
+                    await _broadcast_status()
+                    return
+
+            if args.pre_posture_delay_s > 0:
+                await asyncio.sleep(args.pre_posture_delay_s)
+
+            async def _invoke() -> int:
+                return int(await _sdk_call(sdk_call))
+
+            try:
+                code = await _invoke()
+            except asyncio.TimeoutError:
+                await _broadcast_log(f"{op_name}: timed out", level="warn")
+                await _ack(ws, op_name, False, "SDK call timed out")
+                await _broadcast_status()
+                return
+
+            # Hard retry on stale-sport codes (includes intentional recovery_stand).
+            if needs_rearm and code in {3102, 4205, -1}:
+                await _broadcast_log(
+                    f"{op_name}: code={code} hint={_code_hint(code)}; rearm + retry",
+                    level="warn",
+                )
+                await _pause_control_loop(args.posture_guard_s)
+                ok_rearm, rearm_msg = await _rearm_sport_light(reason=f"retry-{op_name}")
+                await _broadcast_log(f"{op_name}: {rearm_msg}", level="info" if ok_rearm else "warn")
+                # For stand_up/stand_down, kick with RecoveryStand before retry.
+                # For recovery_stand itself, skip the extra RecoveryStand (we're already retrying it).
+                if op_name != "recovery_stand":
+                    try:
+                        rec = int(await _sdk_call(sport.RecoveryStand))
+                        await _broadcast_log(f"{op_name}: RecoveryStand code={rec}", level="info")
+                    except Exception as exc:
+                        await _broadcast_log(f"{op_name}: RecoveryStand failed ({exc})", level="warn")
+                    await asyncio.sleep(max(0.35, float(args.pre_posture_delay_s)))
+                try:
+                    code = await _invoke()
+                except asyncio.TimeoutError:
+                    await _broadcast_log(f"{op_name}: retry timed out", level="warn")
+                    await _ack(ws, op_name, False, "SDK call timed out on retry")
+                    await _broadcast_status()
+                    return
+
+            # StandDown ACK-without-motion mitigation: second StandDown only (no RecoveryStand).
+            if op_name == "stand_down" and code == 0:
+                await _broadcast_log(f"{op_name}: second StandDown (no RecoveryStand)", level="info")
+                await _pause_control_loop(args.posture_guard_s)
+                await asyncio.sleep(max(0.15, float(args.pre_posture_delay_s)))
+                try:
+                    code2 = await _invoke()
+                    if code2 != 0:
+                        await _broadcast_log(
+                            f"{op_name}: second StandDown code={code2} hint={_code_hint(code2)}",
+                            level="warn",
+                        )
+                        code = code2
+                except asyncio.TimeoutError:
+                    await _broadcast_log(f"{op_name}: second StandDown timed out", level="warn")
+                    # Keep first success — robot should still be lying / commanded down.
+
+            await _pause_control_loop(args.posture_guard_s)
+            async with runtime_lock:
+                runtime["last_code"] = code
+                runtime["last_op"] = op_name
+                runtime["last_error"] = "" if code == 0 else _code_hint(code)
+            if code == 0:
+                await _broadcast_log(f"{op_name}: success", level="info")
+            else:
+                await _broadcast_log(
+                    f"{op_name}: failed code={code} hint={_code_hint(code)}",
+                    level="warn",
+                )
+                await _broadcast_robot_error(op_name, code)
+            await _ack(ws, op_name, code == 0, f"code={code}, hint={_code_hint(code)}")
+            await _broadcast_status()
+
+    async def _do_claim_pilot(ws: Any) -> None:
+        async with pilot_lock:
+            current = pilot["ws"]
+            if current is not None and current is not ws:
+                await _broadcast_log("claim_pilot denied: already owned by another client", level="warn")
+                await _ack(ws, "claim_pilot", False, "posture pilot already claimed")
+                await _broadcast_status()
+                return
         ok_mode, mode_msg = await _ensure_normal_mode()
         if not ok_mode:
-            await _broadcast_log(f"{op_name}: normal mode failed ({mode_msg})", level="warn")
-            await _ack(ws, op_name, False, mode_msg)
+            await _broadcast_log(f"claim_pilot denied: {mode_msg}", level="warn")
+            await _ack(ws, "claim_pilot", False, mode_msg)
             async with runtime_lock:
                 runtime["last_code"] = -1
-                runtime["last_op"] = op_name
+                runtime["last_op"] = "claim_pilot"
                 runtime["last_error"] = mode_msg
             await _broadcast_status()
             return
-
-        if args.pre_posture_delay_s > 0:
-            await asyncio.sleep(args.pre_posture_delay_s)
-        code = int(await _sdk_call(sdk_call))
-
-        await _pause_control_loop(args.posture_guard_s)
-        async with runtime_lock:
-            runtime["last_code"] = code
-            runtime["last_op"] = op_name
-            runtime["last_error"] = "" if code == 0 else _code_hint(code)
-        if code == 0:
-            await _broadcast_log(f"{op_name}: success", level="info")
+        async with pilot_lock:
+            pilot["ws"] = ws
+        await clear_client_target(ws)
+        await _broadcast_log("posture pilot granted", level="info")
+        if mode_msg.startswith("WARNING:"):
+            await _ack(ws, "claim_pilot", True, f"posture pilot granted ({mode_msg})")
         else:
-            await _broadcast_log(f"{op_name}: failed code={code} hint={_code_hint(code)}", level="warn")
-            await _broadcast_robot_error(op_name, code)
-        await _ack(ws, op_name, code == 0, f"code={code}, hint={_code_hint(code)}")
+            await _ack(ws, "claim_pilot", True, "posture pilot granted")
+        await _broadcast_status()
+
+    async def _do_release_pilot(ws: Any) -> None:
+        async with pilot_lock:
+            if pilot["ws"] is ws:
+                pilot["ws"] = None
+        await clear_client_target(ws)
+        await _broadcast_log("posture pilot released", level="info")
+        await _ack(ws, "release_pilot", True)
+        await _broadcast_status()
+
+    async def _do_normal_mode(ws: Any) -> None:
+        if not await _require_posture_pilot(ws, "normal_mode"):
+            return
+        ok_mode, mode_msg = await _ensure_normal_mode()
+        async with runtime_lock:
+            runtime["last_code"] = 0 if ok_mode else -1
+            runtime["last_op"] = "normal_mode"
+            runtime["last_error"] = "" if ok_mode else mode_msg
+        await _ack(ws, "normal_mode", ok_mode, mode_msg)
         await _broadcast_status()
 
     async def handler(ws: Any) -> None:
@@ -524,7 +733,14 @@ async def _amain(args: argparse.Namespace) -> None:
                 ],
             },
         )
-        await _send_json(ws, await _build_status_payload())
+        # Do not block entering the recv loop on status (or a stuck peer send).
+        async def _push_initial_status() -> None:
+            try:
+                await _send_json(ws, await _build_status_payload(for_ws=ws))
+            except Exception:
+                pass
+
+        asyncio.create_task(_push_initial_status())
 
         try:
             async for raw in ws:
@@ -551,42 +767,11 @@ async def _amain(args: argparse.Namespace) -> None:
                     continue
 
                 if typ == "claim_pilot":
-                    async with pilot_lock:
-                        current = pilot["ws"]
-                        if current is not None and current is not ws:
-                            await _broadcast_log("claim_pilot denied: already owned by another client", level="warn")
-                            await _ack(ws, "claim_pilot", False, "posture pilot already claimed")
-                            await _broadcast_status()
-                            continue
-                    ok_mode, mode_msg = await _ensure_normal_mode()
-                    if not ok_mode:
-                        await _broadcast_log(f"claim_pilot denied: {mode_msg}", level="warn")
-                        await _ack(ws, "claim_pilot", False, mode_msg)
-                        async with runtime_lock:
-                            runtime["last_code"] = -1
-                            runtime["last_op"] = "claim_pilot"
-                            runtime["last_error"] = mode_msg
-                        await _broadcast_status()
-                        continue
-                    async with pilot_lock:
-                        pilot["ws"] = ws
-                    await clear_client_target(ws)
-                    await _broadcast_log("posture pilot granted", level="info")
-                    if mode_msg.startswith("WARNING:"):
-                        await _ack(ws, "claim_pilot", True, f"posture pilot granted ({mode_msg})")
-                    else:
-                        await _ack(ws, "claim_pilot", True, "posture pilot granted")
-                    await _broadcast_status()
+                    asyncio.create_task(_do_claim_pilot(ws))
                     continue
 
                 if typ == "release_pilot":
-                    async with pilot_lock:
-                        if pilot["ws"] is ws:
-                            pilot["ws"] = None
-                    await clear_client_target(ws)
-                    await _broadcast_log("posture pilot released", level="info")
-                    await _ack(ws, "release_pilot", True)
-                    await _broadcast_status()
+                    asyncio.create_task(_do_release_pilot(ws))
                     continue
 
                 # Host power management: any connected client (no posture pilot).
@@ -618,7 +803,7 @@ async def _amain(args: argparse.Namespace) -> None:
                     asyncio.create_task(_do_host_shutdown())
                     continue
 
-                # Front LED (VUI): any connected client (no posture pilot).
+                # Front LED (VUI): run in background so DDS/VUI RPC cannot stall WS reads/pongs/twists.
                 if typ in ("front_led_on", "front_led_off", "front_led"):
                     if typ == "front_led_on":
                         enable = 1
@@ -629,33 +814,41 @@ async def _amain(args: argparse.Namespace) -> None:
                     else:
                         enable = 1 if int(_safe_float(data.get("enable", 0), default=0)) else 0
                         op_name = "front_led"
-                    await _run_front_led(ws, op_name=op_name, enable=enable)
+                    asyncio.create_task(_run_front_led(ws, op_name=op_name, enable=enable))
                     continue
 
                 if typ == "front_led_brightness":
                     level = int(_safe_float(data.get("level", 5), default=5))
-                    await _run_front_led_brightness(ws, level=level)
+                    asyncio.create_task(_run_front_led_brightness(ws, level=level))
                     continue
 
                 if typ == "front_led_color":
                     color = str(data.get("color", "") or "")
                     time_s = int(_safe_float(data.get("time", 0), default=0))
-                    await _run_front_led_color(ws, color=color, time_s=time_s)
+                    asyncio.create_task(_run_front_led_color(ws, color=color, time_s=time_s))
                     continue
 
                 # twist / stop: any connected client when multi_control (default).
                 if typ in ("twist", "stop") and args.multi_control:
                     if typ == "stop":
                         await clear_client_target(ws)
-                        code = int(await _sdk_call(sport.StopMove))
-                        async with runtime_lock:
-                            runtime["last_code"] = code
-                            runtime["last_op"] = "stop"
-                            runtime["last_error"] = "" if code == 0 else _code_hint(code)
-                        if code != 0:
-                            await _broadcast_robot_error("stop", code)
-                        await _ack(ws, "stop", code == 0, f"code={code}, hint={_code_hint(code)}")
-                        await _broadcast_status()
+
+                        async def _stop_move_task() -> None:
+                            try:
+                                code = int(await _sdk_call(sport.StopMove))
+                            except Exception as exc:
+                                await _ack(ws, "stop", False, str(exc))
+                                return
+                            async with runtime_lock:
+                                runtime["last_code"] = code
+                                runtime["last_op"] = "stop"
+                                runtime["last_error"] = "" if code == 0 else _code_hint(code)
+                            if code != 0:
+                                await _broadcast_robot_error("stop", code)
+                            await _ack(ws, "stop", code == 0, f"code={code}, hint={_code_hint(code)}")
+                            await _broadcast_status()
+
+                        asyncio.create_task(_stop_move_task())
                         continue
 
                     vx = _safe_float(data.get("vx", 0.0))
@@ -677,42 +870,38 @@ async def _amain(args: argparse.Namespace) -> None:
                     continue
 
                 if typ == "stand_up":
-                    if not await _require_posture_pilot(ws, typ):
-                        continue
-                    await _run_posture_command(ws, op_name="stand_up", sdk_call=sport.StandUp)
+                    asyncio.create_task(_run_posture_command(ws, op_name="stand_up", sdk_call=sport.StandUp))
                 elif typ == "stand_down":
-                    if not await _require_posture_pilot(ws, typ):
-                        continue
-                    await _run_posture_command(ws, op_name="stand_down", sdk_call=sport.StandDown)
+                    asyncio.create_task(_run_posture_command(ws, op_name="stand_down", sdk_call=sport.StandDown))
                 elif typ == "normal_mode":
-                    if not await _require_posture_pilot(ws, typ):
-                        continue
-                    ok_mode, mode_msg = await _ensure_normal_mode()
-                    async with runtime_lock:
-                        runtime["last_code"] = 0 if ok_mode else -1
-                        runtime["last_op"] = "normal_mode"
-                        runtime["last_error"] = "" if ok_mode else mode_msg
-                    await _ack(ws, "normal_mode", ok_mode, mode_msg)
-                    await _broadcast_status()
+                    asyncio.create_task(_do_normal_mode(ws))
                 elif typ == "balance_stand":
-                    if not await _require_posture_pilot(ws, typ):
-                        continue
-                    await _run_posture_command(ws, op_name="balance_stand", sdk_call=sport.BalanceStand)
+                    asyncio.create_task(
+                        _run_posture_command(ws, op_name="balance_stand", sdk_call=sport.BalanceStand)
+                    )
                 elif typ == "recovery_stand":
-                    if not await _require_posture_pilot(ws, typ):
-                        continue
-                    await _run_posture_command(ws, op_name="recovery_stand", sdk_call=sport.RecoveryStand)
+                    asyncio.create_task(
+                        _run_posture_command(ws, op_name="recovery_stand", sdk_call=sport.RecoveryStand)
+                    )
                 elif typ == "stop":
                     await clear_client_target(ws)
-                    code = int(await _sdk_call(sport.StopMove))
-                    async with runtime_lock:
-                        runtime["last_code"] = code
-                        runtime["last_op"] = "stop"
-                        runtime["last_error"] = "" if code == 0 else _code_hint(code)
-                    if code != 0:
-                        await _broadcast_robot_error("stop", code)
-                    await _ack(ws, "stop", code == 0, f"code={code}, hint={_code_hint(code)}")
-                    await _broadcast_status()
+
+                    async def _legacy_stop_task() -> None:
+                        try:
+                            code = int(await _sdk_call(sport.StopMove))
+                        except Exception as exc:
+                            await _ack(ws, "stop", False, str(exc))
+                            return
+                        async with runtime_lock:
+                            runtime["last_code"] = code
+                            runtime["last_op"] = "stop"
+                            runtime["last_error"] = "" if code == 0 else _code_hint(code)
+                        if code != 0:
+                            await _broadcast_robot_error("stop", code)
+                        await _ack(ws, "stop", code == 0, f"code={code}, hint={_code_hint(code)}")
+                        await _broadcast_status()
+
+                    asyncio.create_task(_legacy_stop_task())
                 elif typ == "twist":
                     vx = _safe_float(data.get("vx", 0.0))
                     vy = _safe_float(data.get("vy", 0.0))
@@ -744,7 +933,17 @@ async def _amain(args: argparse.Namespace) -> None:
             print(f"[go2_control_ws] client disconnected: {ra}")
 
     async def control_loop() -> None:
-        loop_state: dict[str, Any] = {"last_kind": "none", "last_stop_ts": 0.0, "last_error_code": 0}
+        loop_state: dict[str, Any] = {
+            "last_kind": "none",
+            "last_stop_ts": 0.0,
+            "last_error_code": 0,
+            "error_streak": 0,
+            "last_rearm_ts": 0.0,
+        }
+        rearm_codes = {3102, 4202, 4205, -1, -2}
+        rearm_streak = 3
+        rearm_cooldown_s = 5.0
+
         while True:
             await asyncio.sleep(args.control_period)
             async with control_gate_lock:
@@ -786,19 +985,54 @@ async def _amain(args: argparse.Namespace) -> None:
                     runtime["last_move_ts"] = time.monotonic()
                     runtime["last_error"] = "" if code == 0 else _code_hint(code)
 
-                if code != 0 and code != loop_state.get("last_error_code"):
-                    loop_state["last_error_code"] = code
-                    await _broadcast_log(f"{op}: code={code} hint={_code_hint(code)}", level="warn")
-                    await _broadcast_robot_error(op, code)
-                elif code == 0:
+                if code != 0:
+                    if code != loop_state.get("last_error_code"):
+                        loop_state["last_error_code"] = code
+                        await _broadcast_log(f"{op}: code={code} hint={_code_hint(code)}", level="warn")
+                        await _broadcast_robot_error(op, code)
+                    if code in rearm_codes:
+                        loop_state["error_streak"] = int(loop_state["error_streak"]) + 1
+                    else:
+                        loop_state["error_streak"] = 0
+                else:
                     loop_state["last_error_code"] = 0
+                    loop_state["error_streak"] = 0
+
+                if (
+                    int(loop_state["error_streak"]) >= rearm_streak
+                    and now - float(loop_state["last_rearm_ts"]) >= rearm_cooldown_s
+                ):
+                    loop_state["error_streak"] = 0
+                    loop_state["last_rearm_ts"] = now
+                    await _pause_control_loop(0.4)
+                    await _broadcast_log(f"{op}: auto-rearm after repeated errors", level="warn")
+                    ok_rearm, rearm_msg = await _rearm_sport_light(reason="move_loop auto-rearm")
+                    await _broadcast_log(
+                        f"move_loop: {rearm_msg}",
+                        level="info" if ok_rearm else "warn",
+                    )
             except Exception as exc:
                 async with runtime_lock:
                     runtime["last_code"] = -2
                     runtime["last_op"] = "move_exception"
                     runtime["last_error"] = str(exc)
+                loop_state["error_streak"] = int(loop_state["error_streak"]) + 1
                 await _broadcast_log(f"move loop exception: {exc}", level="warn")
                 await _broadcast_robot_error("move_exception", -2)
+                now = time.monotonic()
+                if (
+                    int(loop_state["error_streak"]) >= rearm_streak
+                    and now - float(loop_state["last_rearm_ts"]) >= rearm_cooldown_s
+                ):
+                    loop_state["error_streak"] = 0
+                    loop_state["last_rearm_ts"] = now
+                    await _pause_control_loop(0.4)
+                    await _broadcast_log("move_loop: auto-rearm after exceptions", level="warn")
+                    ok_rearm, rearm_msg = await _rearm_sport_light(reason="move_exception auto-rearm")
+                    await _broadcast_log(
+                        f"move_loop: {rearm_msg}",
+                        level="info" if ok_rearm else "warn",
+                    )
 
     async def stats_loop() -> None:
         while True:

@@ -88,11 +88,22 @@ Run the camera bridge:
 
 ```bash
 python3 scripts/go2_video_webrtc_bridge.py --iface eth0 --port 8081 --fps 15
+# stop: ./scripts/go2_video_bridge_stop.sh
+```
+
+Check health before debugging the UI:
+
+```bash
+curl -s http://<ip-du-pi>:8081/health
+# expect: {"ok": true, "frame_age_s": <small number>, "peers": ...}
 ```
 
 Then in GO2 LiDAR Studio:
 - enable `Enable WebRTC video overlay`
-- set `WebRTC bridge URL` to `http://<ip-du-pi>:8081`
+- set `WebRTC bridge URL` to `http://<ip-du-pi>:8081` (same host as the page — **not** `127.0.0.1` from another PC)
+- status should move `Checking bridge…` → `LIVE` with fps &gt; 0
+
+If LiDAR/control were started manually without the full stack, the video bridge is often missing — start it separately or use `./scripts/go2_stack_startup.sh` (`VIDEO_ENABLED=1`).
 
 ## Optional robot control bridge (WebSocket)
 

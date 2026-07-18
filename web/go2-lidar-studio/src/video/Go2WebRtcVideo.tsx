@@ -4,6 +4,13 @@ type Props = {
   enabled: boolean;
   baseUrl: string;
   onRttUpdate?: (rttMs: number | null) => void;
+  onStatusUpdate?: (status: string) => void;
+};
+
+type HealthPayload = {
+  ok?: boolean;
+  frame_age_s?: number | null;
+  peers?: number;
 };
 
 function cleanBaseUrl(raw: string): string {
@@ -27,15 +34,39 @@ function hintForFetchFailure(baseUrl: string): string {
   }
 }
 
-export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
+async function waitIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 2000): Promise<void> {
+  if (pc.iceGatheringState === "complete") return;
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      pc.removeEventListener("icegatheringstatechange", onChange);
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const onChange = () => {
+      if (pc.iceGatheringState === "complete") finish();
+    };
+    const timer = window.setTimeout(finish, timeoutMs);
+    pc.addEventListener("icegatheringstatechange", onChange);
+  });
+}
+
+export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate, onStatusUpdate }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [status, setStatus] = useState("OFF");
   const [fps, setFps] = useState(0);
   const [sessionNonce, setSessionNonce] = useState(0);
 
+  const pushStatus = (next: string) => {
+    setStatus(next);
+    onStatusUpdate?.(next);
+  };
+
   useEffect(() => {
     if (!enabled) {
-      setStatus("OFF");
+      pushStatus("OFF");
       setFps(0);
       onRttUpdate?.(null);
       setSessionNonce(0);
@@ -47,11 +78,11 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
     let closed = false;
     let statsTimer: number | null = null;
     let reconnectTimer: number | null = null;
-    setStatus("Connecting...");
+    pushStatus("Connecting...");
 
     const scheduleReconnect = (reason: string) => {
       if (closed || reconnectTimer !== null) return;
-      setStatus(`Reconnecting (${reason})...`);
+      pushStatus(`Reconnecting (${reason})...`);
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         if (!closed) setSessionNonce((v) => v + 1);
@@ -62,7 +93,7 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
     pc.onconnectionstatechange = () => {
       if (closed) return;
       const s = pc.connectionState;
-      setStatus(`WebRTC: ${s}`);
+      pushStatus(`WebRTC: ${s}`);
       if (s === "failed" || s === "disconnected" || s === "closed") {
         onRttUpdate?.(null);
         scheduleReconnect(s);
@@ -79,13 +110,39 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
     pc.ontrack = (event) => {
       if (!videoRef.current) return;
       const [stream] = event.streams;
-      if (stream) videoRef.current.srcObject = stream;
+      if (stream) {
+        videoRef.current.srcObject = stream;
+        void videoRef.current.play().catch(() => {
+          // Autoplay may be blocked until muted — element is muted.
+        });
+      }
     };
 
     (async () => {
       try {
+        const healthUrl = `${cleanBaseUrl(baseUrl)}/health`;
+        pushStatus("Checking bridge...");
+        let health: HealthPayload;
+        try {
+          const healthRes = await fetch(healthUrl, { method: "GET" });
+          if (!healthRes.ok) throw new Error(`HTTP ${healthRes.status}`);
+          health = (await healthRes.json()) as HealthPayload;
+        } catch {
+          throw new Error(`Bridge down: ${healthUrl}. ${hintForFetchFailure(baseUrl)}`);
+        }
+
+        const age = health.frame_age_s;
+        if (age == null) {
+          pushStatus("Bridge OK — waiting for camera frames...");
+        } else if (age > 3) {
+          pushStatus(`Bridge OK — stale frames (${age.toFixed(1)}s)`);
+        } else {
+          pushStatus(`Bridge OK — frames ${age.toFixed(1)}s old`);
+        }
+
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
+        await waitIceGatheringComplete(pc, 2000);
         const local = pc.localDescription;
         if (!local) throw new Error("No local description");
 
@@ -127,13 +184,18 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
             }
           })();
         }, 2000);
-        setStatus("LIVE");
+        pushStatus(age == null ? "LIVE (no camera frames yet)" : "LIVE");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const extra = msg.includes("Failed to fetch") ? ` ${hintForFetchFailure(baseUrl)}` : "";
+        const extra =
+          msg.includes("Failed to fetch") || msg.includes("Bridge down")
+            ? msg.includes("Use Pi IP") || msg.includes("Bridge unreachable") || msg.includes("mixed content")
+              ? ""
+              : ` ${hintForFetchFailure(baseUrl)}`
+            : "";
         setFps(0);
         onRttUpdate?.(null);
-        setStatus(`Error: ${msg}${extra}`);
+        pushStatus(`Error: ${msg}${extra}`);
         scheduleReconnect("offer");
       }
     })();
@@ -157,6 +219,7 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
       onRttUpdate?.(null);
       if (videoRef.current) videoRef.current.srcObject = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onStatusUpdate is optional display sync
   }, [enabled, baseUrl, onRttUpdate, sessionNonce]);
 
   useEffect(() => {
@@ -194,7 +257,6 @@ export function Go2WebRtcVideo({ enabled, baseUrl, onRttUpdate }: Props) {
       timerId = window.setInterval(() => {
         const nowTime = video.currentTime;
         const dt = nowTime - lastTime;
-        // Approximate fallback if requestVideoFrameCallback isn't supported.
         const approx = dt > 0 ? Math.round(1 / dt) : 0;
         setFps(Math.max(0, Math.min(120, approx)));
         lastTime = nowTime;

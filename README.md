@@ -227,7 +227,7 @@ sudo systemctl enable --now go2-stack
 sudo journalctl -u go2-stack -f
 ```
 
-Variables utiles dans `/etc/default/go2-stack` (voir `deploy/go2-stack.env.example`) : `IFACE`, `ROBOT_IP`, `MAPPING_CMDS`, `LIDAR_WS_PORT`, `CONTROL_WS_PORT`, `VIDEO_ENABLED`, `VIDEO_HTTP_PORT`, `VIDEO_FPS`.
+Variables utiles dans `/etc/default/go2-stack` (voir `deploy/go2-stack.env.example`) : `IFACE`, `ROBOT_IP`, `MAPPING_CMDS`, `LIDAR_WS_PORT`, `LIDAR_CLOUD_STALL_S`, `CONTROL_WS_PORT`, `VIDEO_ENABLED`, `VIDEO_HTTP_PORT`, `VIDEO_FPS`.
 
 **Extinction Pi depuis l’UI** (`ShutdownPi` / `{type:"shutdown_pi"}`) : le bridge exécute `sudo /sbin/shutdown -h now`. L’utilisateur du service (`pigeons`) doit pouvoir le faire sans mot de passe, par ex. dans `/etc/sudoers.d/go2-shutdown` :
 

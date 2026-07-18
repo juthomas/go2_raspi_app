@@ -25,6 +25,7 @@ type Props = {
   debugLogs: string[];
   onClearLogs: () => void;
   onSend: (payload: Record<string, unknown>) => boolean;
+  onSendPosture: (type: string) => void | Promise<boolean>;
   speedVx: number;
   speedVyaw: number;
 };
@@ -50,6 +51,7 @@ export function Go2ControlOverlay({
   debugLogs,
   onClearLogs,
   onSend,
+  onSendPosture,
   speedVx,
   speedVyaw,
 }: Props) {
@@ -79,6 +81,14 @@ export function Go2ControlOverlay({
       setPressed("right", false);
     }
   }, [enabled, setPressed]);
+
+  useEffect(() => {
+    if (controlConnected) return;
+    setPressed("up", false);
+    setPressed("down", false);
+    setPressed("left", false);
+    setPressed("right", false);
+  }, [controlConnected, setPressed]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -117,6 +127,7 @@ export function Go2ControlOverlay({
       setPressed("down", false);
       setPressed("left", false);
       setPressed("right", false);
+      if (controlConnected) onSend({ type: "stop" });
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -126,7 +137,7 @@ export function Go2ControlOverlay({
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [enabled, onSend, setPressed]);
+  }, [controlConnected, enabled, onSend, setPressed]);
 
   useEffect(() => {
     if (!enabled || !controlConnected || !controlCanDrive) return;
@@ -210,29 +221,41 @@ export function Go2ControlOverlay({
         </button>
       </div>
       <div className="control-actions">
-        <button onClick={() => onSend({ type: "claim_pilot" })} title="Required for StandUp/Down only">
+        <button
+          onClick={() => onSend({ type: "claim_pilot" })}
+          disabled={!controlConnected}
+          title="Optional — Stand* auto-claims if needed"
+        >
           ClaimPosturePilot
         </button>
-        <button onClick={() => onSend({ type: "normal_mode" })} disabled={!controlPosturePilot}>
+        <button
+          onClick={() => void onSendPosture("normal_mode")}
+          disabled={!controlConnected}
+        >
           NormalMode
         </button>
-        <button onClick={() => onSend({ type: "stand_up" })} disabled={!controlPosturePilot}>
+        <button onClick={() => void onSendPosture("stand_up")} disabled={!controlConnected}>
           StandUp
         </button>
-        <button onClick={() => onSend({ type: "stand_down" })} disabled={!controlPosturePilot}>
+        <button onClick={() => void onSendPosture("stand_down")} disabled={!controlConnected}>
           StandDown
         </button>
-        <button onClick={() => onSend({ type: "balance_stand" })} disabled={!controlPosturePilot}>
+        <button onClick={() => void onSendPosture("balance_stand")} disabled={!controlConnected}>
           BalanceStand
         </button>
-        <button onClick={() => onSend({ type: "recovery_stand" })} disabled={!controlPosturePilot}>
+        <button onClick={() => void onSendPosture("recovery_stand")} disabled={!controlConnected}>
           RecoveryStand
         </button>
         <button onClick={onClearLogs}>ClearLogs</button>
         <button onClick={() => void copyLogs()}>CopyLogs</button>
-        <button onClick={() => onSend({ type: "front_led", enable: 1 })}>FrontLedOn</button>
-        <button onClick={() => onSend({ type: "front_led", enable: 0 })}>FrontLedOff</button>
+        <button onClick={() => onSend({ type: "front_led", enable: 1 })} disabled={!controlConnected}>
+          FrontLedOn
+        </button>
+        <button onClick={() => onSend({ type: "front_led", enable: 0 })} disabled={!controlConnected}>
+          FrontLedOff
+        </button>
         <button
+          disabled={!controlConnected}
           onClick={() => {
             if (window.confirm("Éteindre le Raspberry Pi ?")) {
               onSend({ type: "shutdown_pi" });
@@ -245,7 +268,7 @@ export function Go2ControlOverlay({
       <div className="control-debug">
         <div>
           conn: {controlConnected ? "yes" : "no"} drive: {controlCanDrive ? "yes" : "no"} posture pilot:{" "}
-          {controlPosturePilot ? "yes" : "no"}
+          {controlPosturePilot ? "yes" : "no"} someone: {serverStatus?.pilot ? "yes" : "no"}
         </div>
         <div className={serverStatus?.moveOk === false ? "control-move-fail" : "control-move-ok"}>{moveLabel}</div>
         <div>
@@ -268,7 +291,7 @@ export function Go2ControlOverlay({
         <div className="control-copy-status">{copyStatus || "\u00a0"}</div>
       </div>
       <div className="control-hint">
-        WASD/arrows = drive (no pilot needed). ClaimPosturePilot for StandUp/Down. Ignore send ok — watch move: OK/FAIL.
+        WASD/arrows = drive. Stand*/Recovery auto-claim posture pilot if needed. Watch ack stand_* and move: OK/FAIL.
       </div>
     </div>
   );
