@@ -262,6 +262,14 @@ export function useGo2Store() {
             statusText: message,
           }));
         },
+        onWarn: (message) => {
+          setState((prev) => ({
+            ...prev,
+            // Keep WS connected; stall recovery is not a disconnect.
+            status: prev.status === "disconnected" ? prev.status : "connected",
+            statusText: message,
+          }));
+        },
         onHello: (msg) => {
           if (msg.type !== "hello") return;
           const mapSrc = msg.voxel_map_source ?? (msg.voxel_enabled ? "on" : "off");

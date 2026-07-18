@@ -8,6 +8,7 @@ Type=simple
 User=pigeons
 WorkingDirectory=/home/pigeons/Documents/unitree/go2_raspi_app
 EnvironmentFile=-/etc/default/go2-stack
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/pigeons/Documents/unitree/go2_raspi_app/scripts/go2_stack_startup.sh
 Restart=on-failure
 RestartSec=15

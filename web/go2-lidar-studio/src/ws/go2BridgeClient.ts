@@ -5,6 +5,7 @@ type Handlers = {
   onOpen?: () => void;
   onClose?: (code: number, reason: string) => void;
   onError?: (message: string) => void;
+  onWarn?: (message: string) => void;
   onHello?: (msg: Go2WsMessage) => void;
   onPointCloud?: (msg: Go2PointCloudMessage) => void;
   onVoxelMap?: (msg: Go2VoxelMapMessage) => void;
@@ -166,6 +167,10 @@ export class Go2BridgeClient {
     }
     if (msg.type === "error") {
       this.handlers.onError?.(String(msg.msg ?? "Unknown bridge error"));
+      return;
+    }
+    if (msg.type === "warn") {
+      this.handlers.onWarn?.(String(msg.msg ?? "Bridge warning"));
       return;
     }
     if (isGo2PointCloudMessage(msg)) {

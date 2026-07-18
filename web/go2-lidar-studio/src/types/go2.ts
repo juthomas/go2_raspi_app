@@ -19,6 +19,11 @@ export type Go2ErrorMessage = {
   msg: string;
 };
 
+export type Go2WarnMessage = {
+  type: "warn";
+  msg: string;
+};
+
 export type Go2RobotState = {
   mode?: number;
   gait_type?: number;
@@ -71,6 +76,7 @@ export type Go2VoxelMapMessage = {
 export type Go2WsMessage =
   | Go2HelloMessage
   | Go2ErrorMessage
+  | Go2WarnMessage
   | Go2PointCloudMessage
   | Go2VoxelMapMessage;
 
