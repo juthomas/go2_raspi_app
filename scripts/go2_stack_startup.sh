@@ -2,7 +2,7 @@
 # Start GO2 LiDAR + control WebSocket bridges after robot preparation.
 set -euo pipefail
 
-APP_ROOT="${GO2_APP_ROOT:-/home/pigeons/Documents/unitree/go2_raspi_app}"
+APP_ROOT="${GO2_APP_ROOT:-/home/billy/Documents/unitree/go2_raspi_app}"
 IFACE="${IFACE:-eth0}"
 ROBOT_IP="${ROBOT_IP:-192.168.123.161}"
 PREPARE_RETRIES="${PREPARE_RETRIES:-30}"

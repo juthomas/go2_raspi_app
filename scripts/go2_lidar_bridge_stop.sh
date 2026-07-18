@@ -2,7 +2,7 @@
 # Stop the GO2 LiDAR WebSocket bridge (go2_lidar_ws_bridge.py).
 set -euo pipefail
 
-APP_ROOT="${GO2_APP_ROOT:-/home/pigeons/Documents/unitree/go2_raspi_app}"
+APP_ROOT="${GO2_APP_ROOT:-/home/billy/Documents/unitree/go2_raspi_app}"
 LIDAR_WS_PORT="${LIDAR_WS_PORT:-8765}"
 SCRIPT_NAME="go2_lidar_ws_bridge.py"
 GRACE_S="${GRACE_S:-5}"

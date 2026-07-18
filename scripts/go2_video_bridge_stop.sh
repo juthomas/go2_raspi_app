@@ -2,7 +2,7 @@
 # Stop the GO2 video WebRTC bridge (go2_video_webrtc_bridge.py).
 set -euo pipefail
 
-APP_ROOT="${GO2_APP_ROOT:-/home/pigeons/Documents/unitree/go2_raspi_app}"
+APP_ROOT="${GO2_APP_ROOT:-/home/billy/Documents/unitree/go2_raspi_app}"
 VIDEO_HTTP_PORT="${VIDEO_HTTP_PORT:-8081}"
 SCRIPT_NAME="go2_video_webrtc_bridge.py"
 GRACE_S="${GRACE_S:-5}"

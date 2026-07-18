@@ -51,7 +51,7 @@ def _publish_utlidar_switch_on() -> None:
     msg.data = "ON"
     pub.Write(msg)
 
-_DEBUG_LOG_PATH = "/home/pigeons/Documents/unitree/go2_raspi_app/.cursor/debug-9466d0.log"
+_DEBUG_LOG_PATH = "/home/billy/Documents/unitree/go2_raspi_app/.cursor/debug-9466d0.log"
 _DEBUG_SESSION = "9466d0"
 
 

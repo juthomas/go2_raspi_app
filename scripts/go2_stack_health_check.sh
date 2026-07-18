@@ -2,7 +2,7 @@
 # Quick health check for GO2 stack (ping, WS ports, optional DDS probe).
 set -euo pipefail
 
-APP_ROOT="${GO2_APP_ROOT:-/home/pigeons/Documents/unitree/go2_raspi_app}"
+APP_ROOT="${GO2_APP_ROOT:-/home/billy/Documents/unitree/go2_raspi_app}"
 IFACE="${IFACE:-eth0}"
 ROBOT_IP="${ROBOT_IP:-192.168.123.161}"
 LIDAR_WS_PORT="${LIDAR_WS_PORT:-8765}"

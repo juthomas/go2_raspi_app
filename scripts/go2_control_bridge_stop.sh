@@ -2,7 +2,7 @@
 # Stop the GO2 control WebSocket bridge (go2_control_ws_bridge.py).
 set -euo pipefail
 
-APP_ROOT="${GO2_APP_ROOT:-/home/pigeons/Documents/unitree/go2_raspi_app}"
+APP_ROOT="${GO2_APP_ROOT:-/home/billy/Documents/unitree/go2_raspi_app}"
 CONTROL_WS_PORT="${CONTROL_WS_PORT:-8766}"
 SCRIPT_NAME="go2_control_ws_bridge.py"
 GRACE_S="${GRACE_S:-5}"

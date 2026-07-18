@@ -49,7 +49,7 @@ ln -sfn /usr/lib/aarch64-linux-gnu "$HOME/cyclonedds-prefix/lib"
 ### 3) installer ce projet + CycloneDDS dans le venv
 
 ```bash
-cd /home/pigeons/Documents/unitree/go2_raspi_app
+cd /home/billy/Documents/unitree/go2_raspi_app
 python3 -m venv .venv
 source .venv/bin/activate
 export CYCLONEDDS_HOME="$HOME/cyclonedds-prefix"
@@ -64,13 +64,13 @@ pip install -e ".[dds]"
 ### 4) installer `unitree_sdk2py` en editable (evite un bug packaging upstream)
 
 ```bash
-cd /home/pigeons/Documents/unitree
+cd /home/billy/Documents/unitree
 git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
-cd /home/pigeons/Documents/unitree/go2_raspi_app
+cd /home/billy/Documents/unitree/go2_raspi_app
 source .venv/bin/activate
 export CYCLONEDDS_HOME="$HOME/cyclonedds-prefix"
 export CFLAGS="-D_Py_IsFinalizing=Py_IsFinalizing"
-pip install -e /home/pigeons/Documents/unitree/unitree_sdk2_python
+pip install -e /home/billy/Documents/unitree/unitree_sdk2_python
 ```
 
 ## Utilisation
